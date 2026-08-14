@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WinQuota.Core/WinQuota.Core.csproj" />
+    <Project Path="src/WinQuota.Service/WinQuota.Service.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WinQuota.Core.Tests/WinQuota.Core.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,10 @@
+bin/
+obj/
+*.user
+.smoke/
+TestResults/
+*.db
+*.db-wal
+*.db-shm
+node_modules/
+src/WinQuota.Web/dist/
