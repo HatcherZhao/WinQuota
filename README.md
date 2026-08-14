@@ -80,6 +80,22 @@ API 仅监听回环地址并校验 Host 头；查询类接口免鉴权，规则�
 - 右键菜单：今日状态 / 打开管理界面 / 锁定电脑 / 开机自启 / 退出
 - 退出需要管理员 PIN（未设置 PIN 时直接确认），且退出托盘不影响后台服务的限制
 
+## 打包安装程序
+
+```bash
+# 1. 前端
+cd src/WinQuota.Web && npm install && npm run build && cd ../..
+# 2. 发布自包含单文件（目标机器无需安装 .NET）
+dotnet publish src/WinQuota.Service -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o publish/service
+dotnet publish src/WinQuota.Tray -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o publish/tray
+# 3. NSIS 安装包（注意：installer.nsi 需 UTF-8 BOM 编码）
+cd tools && makensis installer.nsi
+# 产物：dist/WinQuota-Setup-<版本>.exe
+```
+
+安装包包含：后台服务（含网页管理界面）、托盘程序、开始菜单快捷方式、卸载器；
+安装时可选“托盘开机自启”，服务自动注册并配置故障自恢复。
+
 ## 部署为 Windows 服务
 
 推荐使用安装脚本（自动配置故障自恢复策略）：

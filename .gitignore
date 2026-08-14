@@ -8,3 +8,5 @@ TestResults/
 *.db-shm
 node_modules/
 src/WinQuota.Web/dist/
+publish/
+dist/
