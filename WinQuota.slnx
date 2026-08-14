@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/WinQuota.Core/WinQuota.Core.csproj" />
     <Project Path="src/WinQuota.Service/WinQuota.Service.csproj" />
+    <Project Path="src/WinQuota.Tray/WinQuota.Tray.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/WinQuota.Core.Tests/WinQuota.Core.Tests.csproj" />

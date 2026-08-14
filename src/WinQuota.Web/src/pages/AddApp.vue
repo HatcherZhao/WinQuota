@@ -192,6 +192,18 @@ async function submitComputer() {
       @selection-change="(keys: any) => (selectedKeys = keys.map(String))"
     >
       <template #columns>
+        <a-table-column title="" :width="44">
+          <template #cell="{ record }">
+            <img
+              v-if="record.path"
+              :src="`/api/icon?path=${encodeURIComponent(record.path)}`"
+              width="16"
+              height="16"
+              style="vertical-align: middle"
+              @error="(e: any) => (e.target.style.visibility = 'hidden')"
+            />
+          </template>
+        </a-table-column>
         <a-table-column title="进程名" data-index="name" :width="150" />
         <a-table-column title="产品名称" data-index="productName" :width="180" ellipsis tooltip>
           <template #cell="{ record }">{{ record.productName || '—' }}</template>

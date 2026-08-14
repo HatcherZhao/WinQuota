@@ -27,6 +27,12 @@ public sealed class QuotaWorker : BackgroundService
     private readonly Dictionary<long, RuleRuntime> _runtimes = [];
     private ComputerUsageState? _lastComputerState;
 
+    // 系统时间防回拨状态
+    private DateOnly _maxObservedDate = DateOnly.MinValue;
+    private DateTime _lastWallClockUtc = DateTime.MinValue;
+    private long _lastMonotonicTicks;
+    private DateTime _lastTamperNotifyUtc = DateTime.MinValue;
+
     public QuotaWorker(
         QuotaDatabase database,
         IProcessScanner scanner,
@@ -96,7 +102,7 @@ public sealed class QuotaWorker : BackgroundService
     private void Tick(int elapsedSeconds)
     {
         var now = DateTime.Now;
-        var today = DateOnly.FromDateTime(now);
+        var today = ResolveEffectiveDate(now);
 
         var rules = _database.GetRules(enabledFilter: true);
         var snapshots = _scanner.Snapshot();
@@ -195,6 +201,48 @@ public sealed class QuotaWorker : BackgroundService
                 computerState,
                 liveMatched,
                 rules.ToDictionary(e => e.Rule.Id, e => GetRuntime(e.Rule.Id, today).PendingDeltaSeconds));
+    }
+
+    /// <summary>
+    /// 计算本轮使用的有效日期，并监测系统时间回拨：
+    /// 回拨时额度继续按已观测的最大日期累计（防“改时间到昨天重置额度”），
+    /// 同时以 Toast 提醒（每小时最多一次）。
+    /// </summary>
+    private DateOnly ResolveEffectiveDate(DateTime now)
+    {
+        var nowUtc = now.ToUniversalTime();
+        var monotonic = Stopwatch.GetTimestamp();
+        if (_lastMonotonicTicks > 0)
+        {
+            var wallDelta = nowUtc - _lastWallClockUtc;
+            var monoDelta = TimeSpan.FromSeconds((monotonic - _lastMonotonicTicks) / (double)Stopwatch.Frequency);
+            if (ClockGuard.IsBackwardAdjustment(wallDelta, monoDelta) &&
+                DateTime.UtcNow - _lastTamperNotifyUtc > TimeSpan.FromHours(1))
+            {
+                _lastTamperNotifyUtc = DateTime.UtcNow;
+                _logger.LogWarning("检测到系统时间被回拨（墙钟 {Wall:F0}s / 单调 {Mono:F0}s），额度日期继续按 {Date} 计",
+                    wallDelta.TotalSeconds, monoDelta.TotalSeconds, _maxObservedDate);
+                _notifier.Notify("WinQuota 防沉迷", "检测到系统时间被回拨，今日额度不会因此重置。");
+            }
+        }
+
+        _lastWallClockUtc = nowUtc;
+        _lastMonotonicTicks = monotonic;
+
+        var today = DateOnly.FromDateTime(now);
+        var effective = ClockGuard.EffectiveDate(today, _maxObservedDate);
+        if (effective != _maxObservedDate && today < _maxObservedDate && _maxObservedDate.DayNumber - today.DayNumber <= 7)
+        {
+            _logger.LogWarning("系统日期回拨 {Days} 天（{Today} < {Max}），额度按 {Effective} 继续",
+                _maxObservedDate.DayNumber - today.DayNumber, today, _maxObservedDate, effective);
+        }
+
+        if (effective > _maxObservedDate)
+        {
+            _maxObservedDate = effective;
+        }
+
+        return effective;
     }
 
     private RuleRuntime GetRuntime(long ruleId, DateOnly today)

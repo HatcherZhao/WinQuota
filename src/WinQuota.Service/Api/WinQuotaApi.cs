@@ -233,6 +233,17 @@ public static class WinQuotaApi
             });
         });
 
+        app.MapGet("/api/icon", (string? path) =>
+        {
+            if (string.IsNullOrWhiteSpace(path) || !path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            {
+                return Results.BadRequest();
+            }
+
+            var png = Services.IconCache.GetPng(path);
+            return png is null ? Results.NotFound() : Results.File(png, "image/png");
+        });
+
         app.MapPost("/api/pin/verify", (VerifyPinRequest body, QuotaDatabase db) =>
             Results.Json(new { ok = !PinHasher.HasPin(db) || PinHasher.VerifyPin(db, body.Pin ?? string.Empty) }));
 
