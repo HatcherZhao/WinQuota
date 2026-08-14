@@ -11,6 +11,7 @@ namespace WinQuota.Core.Data;
 public sealed class QuotaDatabase
 {
     private readonly string _connectionString;
+    private readonly IntegrityGuard _integrity;
     private readonly object _gate = new();
 
     public QuotaDatabase(string databasePath)
@@ -27,11 +28,35 @@ public sealed class QuotaDatabase
             DataSource = databasePath,
             Mode = SqliteOpenMode.ReadWriteCreate,
         }.ToString();
+        _integrity = new IntegrityGuard(databasePath);
 
         EnsureCreated();
     }
 
     public string DatabasePath { get; }
+
+    /// <summary>完整性密钥文件是否存在（丢失时需要管理员重建基线）。</summary>
+    public bool HasIntegrityKey => _integrity.HasKeyFile;
+
+    /// <summary>校验数据库完整性：外部直改 / 数据库文件回滚 / 基线缺失分别见 <see cref="IntegrityStatus"/>。</summary>
+    public IntegrityStatus VerifyIntegrity()
+    {
+        lock (_gate)
+        {
+            using var connection = Open();
+            return _integrity.Verify(connection);
+        }
+    }
+
+    /// <summary>密钥文件丢失后由管理员确认调用：生成新密钥并把当前数据写入新基线。</summary>
+    public void ReinitializeIntegrity()
+    {
+        lock (_gate)
+        {
+            using var connection = Open();
+            _integrity.WriteBaseline(connection);
+        }
+    }
 
     private SqliteConnection Open()
     {
@@ -97,7 +122,32 @@ public sealed class QuotaDatabase
                 );
                 """;
             command.ExecuteNonQuery();
+
+            // 旧库升级迁移：0.5.x 及之前没有 signer 列（签名者匹配，第四阶段）。
+            var migrated = EnsureSignerColumn(connection);
+            // 全新库 / 旧版本升级 / 完整性防护首次启用：写入基线签名。
+            if (migrated || _integrity.GetStoredHmac(connection) is null)
+            {
+                _integrity.WriteBaseline(connection);
+            }
         }
+    }
+
+    private static bool EnsureSignerColumn(SqliteConnection connection)
+    {
+        using (var check = connection.CreateCommand())
+        {
+            check.CommandText = "SELECT COUNT(*) FROM pragma_table_info('application_rules') WHERE name = 'signer'";
+            if (Convert.ToInt64(check.ExecuteScalar(), CultureInfo.InvariantCulture) > 0)
+            {
+                return false;
+            }
+        }
+
+        using var alter = connection.CreateCommand();
+        alter.CommandText = "ALTER TABLE application_rules ADD COLUMN signer TEXT";
+        alter.ExecuteNonQuery();
+        return true;
     }
 
     #region 规则
@@ -112,7 +162,8 @@ public sealed class QuotaDatabase
         IReadOnlyList<string> processNames,
         string? exePath = null,
         string? productName = null,
-        string? publisher = null)
+        string? publisher = null,
+        string? signer = null)
     {
         if (processNames.Count == 0)
         {
@@ -130,8 +181,8 @@ public sealed class QuotaDatabase
             {
                 using var command = connection.CreateCommand();
                 command.CommandText = """
-                    INSERT INTO application_rules (rule_id, application_name, process_name, exe_path, product_name, publisher, enabled)
-                    VALUES (@ruleId, @appName, @processName, @exePath, @productName, @publisher, 1);
+                    INSERT INTO application_rules (rule_id, application_name, process_name, exe_path, product_name, publisher, signer, enabled)
+                    VALUES (@ruleId, @appName, @processName, @exePath, @productName, @publisher, @signer, 1);
                     """;
                 command.Parameters.AddWithValue("@ruleId", ruleId);
                 command.Parameters.AddWithValue("@appName", name);
@@ -139,10 +190,13 @@ public sealed class QuotaDatabase
                 command.Parameters.AddWithValue("@exePath", (object?)exePath ?? DBNull.Value);
                 command.Parameters.AddWithValue("@productName", (object?)productName ?? DBNull.Value);
                 command.Parameters.AddWithValue("@publisher", (object?)publisher ?? DBNull.Value);
+                command.Parameters.AddWithValue("@signer", (object?)signer ?? DBNull.Value);
                 command.ExecuteNonQuery();
             }
 
+            _integrity.SignAfterWrite(connection);
             transaction.Commit();
+            _integrity.NotifyCommitted();
             return ruleId;
         }
     }
@@ -155,7 +209,9 @@ public sealed class QuotaDatabase
             using var connection = Open();
             using var transaction = connection.BeginTransaction();
             var ruleId = InsertLimitRule(connection, name, RuleType.COMPUTER, weekdayLimitsMonToSun);
+            _integrity.SignAfterWrite(connection);
             transaction.Commit();
+            _integrity.NotifyCommitted();
             return ruleId;
         }
     }
@@ -218,7 +274,7 @@ public sealed class QuotaDatabase
 
             using (var command = connection.CreateCommand())
             {
-                command.CommandText = "SELECT id, rule_id, application_name, process_name, exe_path, product_name, publisher, enabled FROM application_rules ORDER BY id";
+                command.CommandText = "SELECT id, rule_id, application_name, process_name, exe_path, product_name, publisher, signer, enabled FROM application_rules ORDER BY id";
                 using var reader = command.ExecuteReader();
                 var byRuleId = rules.ToDictionary(entry => entry.Item1.Id, entry => (List<ApplicationRule>)entry.Item2);
                 while (reader.Read())
@@ -237,7 +293,8 @@ public sealed class QuotaDatabase
                         ExePath = reader.IsDBNull(4) ? null : reader.GetString(4),
                         ProductName = reader.IsDBNull(5) ? null : reader.GetString(5),
                         Publisher = reader.IsDBNull(6) ? null : reader.GetString(6),
-                        Enabled = reader.GetInt64(7) != 0,
+                        Signer = reader.IsDBNull(7) ? null : reader.GetString(7),
+                        Enabled = reader.GetInt64(8) != 0,
                     });
                 }
             }
@@ -252,6 +309,7 @@ public sealed class QuotaDatabase
         lock (_gate)
         {
             using var connection = Open();
+            using var transaction = connection.BeginTransaction();
             using var command = connection.CreateCommand();
             command.CommandText = """
                 UPDATE limit_rules
@@ -261,7 +319,15 @@ public sealed class QuotaDatabase
                 """;
             AddWeekdayParams(command, weekdayLimitsMonToSun);
             command.Parameters.AddWithValue("@id", ruleId);
-            return command.ExecuteNonQuery() == 1;
+            var changed = command.ExecuteNonQuery() == 1;
+            if (changed)
+            {
+                _integrity.SignAfterWrite(connection);
+                transaction.Commit();
+                _integrity.NotifyCommitted();
+            }
+
+            return changed;
         }
     }
 
@@ -270,11 +336,20 @@ public sealed class QuotaDatabase
         lock (_gate)
         {
             using var connection = Open();
+            using var transaction = connection.BeginTransaction();
             using var command = connection.CreateCommand();
             command.CommandText = "UPDATE limit_rules SET enabled = @enabled WHERE id = @id";
             command.Parameters.AddWithValue("@enabled", enabled ? 1 : 0);
             command.Parameters.AddWithValue("@id", ruleId);
-            return command.ExecuteNonQuery() == 1;
+            var changed = command.ExecuteNonQuery() == 1;
+            if (changed)
+            {
+                _integrity.SignAfterWrite(connection);
+                transaction.Commit();
+                _integrity.NotifyCommitted();
+            }
+
+            return changed;
         }
     }
 
@@ -288,8 +363,15 @@ public sealed class QuotaDatabase
             command.CommandText = "DELETE FROM limit_rules WHERE id = @id";
             command.Parameters.AddWithValue("@id", ruleId);
             var changed = command.ExecuteNonQuery();
-            transaction.Commit();
-            return changed == 1;
+            if (changed == 1)
+            {
+                _integrity.SignAfterWrite(connection);
+                transaction.Commit();
+                _integrity.NotifyCommitted();
+                return true;
+            }
+
+            return false;
         }
     }
 
@@ -306,11 +388,18 @@ public sealed class QuotaDatabase
         lock (_gate)
         {
             using var connection = Open();
-            return GetOrCreateUsage(connection, ruleId, date);
+            var usage = GetOrCreateUsage(connection, ruleId, date, out var created);
+            if (created)
+            {
+                _integrity.SignAfterWrite(connection);
+                _integrity.NotifyCommitted();
+            }
+
+            return usage;
         }
     }
 
-    private static DailyUsage GetOrCreateUsage(SqliteConnection connection, long ruleId, DateOnly date)
+    private static DailyUsage GetOrCreateUsage(SqliteConnection connection, long ruleId, DateOnly date, out bool created)
     {
         var dateText = FormatDate(date);
         using (var query = connection.CreateCommand())
@@ -321,6 +410,7 @@ public sealed class QuotaDatabase
             using var reader = query.ExecuteReader();
             if (reader.Read())
             {
+                created = false;
                 return new DailyUsage
                 {
                     Id = reader.GetInt64(0),
@@ -342,6 +432,7 @@ public sealed class QuotaDatabase
             insert.Parameters.AddWithValue("@ruleId", ruleId);
             insert.Parameters.AddWithValue("@date", dateText);
             var id = Convert.ToInt64(insert.ExecuteScalar(), CultureInfo.InvariantCulture);
+            created = true;
             return new DailyUsage { Id = id, RuleId = ruleId, UsageDate = date, UsedSeconds = 0, BonusSeconds = 0 };
         }
     }
@@ -357,13 +448,17 @@ public sealed class QuotaDatabase
         lock (_gate)
         {
             using var connection = Open();
-            GetOrCreateUsage(connection, ruleId, date);
+            using var transaction = connection.BeginTransaction();
+            GetOrCreateUsage(connection, ruleId, date, out _);
             using var command = connection.CreateCommand();
             command.CommandText = "UPDATE daily_usage SET used_seconds = used_seconds + @delta WHERE rule_id = @ruleId AND usage_date = @date";
             command.Parameters.AddWithValue("@delta", deltaSeconds);
             command.Parameters.AddWithValue("@ruleId", ruleId);
             command.Parameters.AddWithValue("@date", FormatDate(date));
             command.ExecuteNonQuery();
+            _integrity.SignAfterWrite(connection);
+            transaction.Commit();
+            _integrity.NotifyCommitted();
         }
     }
 
@@ -373,13 +468,17 @@ public sealed class QuotaDatabase
         lock (_gate)
         {
             using var connection = Open();
-            GetOrCreateUsage(connection, ruleId, date);
+            using var transaction = connection.BeginTransaction();
+            GetOrCreateUsage(connection, ruleId, date, out _);
             using var command = connection.CreateCommand();
             command.CommandText = "UPDATE daily_usage SET bonus_seconds = bonus_seconds + @seconds WHERE rule_id = @ruleId AND usage_date = @date; SELECT bonus_seconds FROM daily_usage WHERE rule_id = @ruleId AND usage_date = @date";
             command.Parameters.AddWithValue("@seconds", seconds);
             command.Parameters.AddWithValue("@ruleId", ruleId);
             command.Parameters.AddWithValue("@date", FormatDate(date));
             var result = command.ExecuteScalar();
+            _integrity.SignAfterWrite(connection);
+            transaction.Commit();
+            _integrity.NotifyCommitted();
             return Convert.ToInt64(result ?? 0L, CultureInfo.InvariantCulture);
         }
     }
@@ -458,11 +557,15 @@ public sealed class QuotaDatabase
         lock (_gate)
         {
             using var connection = Open();
+            using var transaction = connection.BeginTransaction();
             using var command = connection.CreateCommand();
             command.CommandText = "INSERT INTO settings (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = @value";
             command.Parameters.AddWithValue("@key", key);
             command.Parameters.AddWithValue("@value", value);
             command.ExecuteNonQuery();
+            _integrity.SignAfterWrite(connection);
+            transaction.Commit();
+            _integrity.NotifyCommitted();
         }
     }
 

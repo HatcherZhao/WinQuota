@@ -18,5 +18,9 @@ public class ApplicationRule
 
     public string? Publisher { get; set; }
 
+    /// <summary>可选的数字签名者匹配（证书 Subject 的 CN，如 "Tencent Technology(Shenzhen) Company Limited"）。
+    /// 配置后，任何由该签名者有效签名且未被篡改的 exe 都会命中规则——重命名、复制、换目录均无法绕过。</summary>
+    public string? Signer { get; set; }
+
     public bool Enabled { get; set; } = true;
 }

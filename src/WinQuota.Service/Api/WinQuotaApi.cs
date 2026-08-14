@@ -82,6 +82,7 @@ public static class WinQuotaApi
                     exePath = a.ExePath,
                     productName = a.ProductName,
                     publisher = a.Publisher,
+                    signer = a.Signer,
                 }),
             });
             return Results.Json(new { rules = list });
@@ -104,7 +105,9 @@ public static class WinQuotaApi
                 BuildWeekdayLimits(body.Minutes, body.WeekendMinutes),
                 body.ProcessNames.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).ToArray(),
                 string.IsNullOrWhiteSpace(body.ExePath) ? null : body.ExePath.Trim(),
-                string.IsNullOrWhiteSpace(body.ProductName) ? null : body.ProductName.Trim());
+                string.IsNullOrWhiteSpace(body.ProductName) ? null : body.ProductName.Trim(),
+                null,
+                string.IsNullOrWhiteSpace(body.Signer) ? null : body.Signer.Trim());
             return Results.Json(new { ruleId });
         });
 
@@ -257,6 +260,22 @@ public static class WinQuotaApi
             return png is null ? Results.NotFound() : Results.File(png, "image/png");
         });
 
+        // 按需验证某个 exe 的数字签名并返回签名者 CN（WinVerifyTrust 较昂贵，进程选择器点击时调用）
+        app.MapGet("/api/signature", (string? path) =>
+        {
+            if (string.IsNullOrWhiteSpace(path) || !path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || !System.IO.File.Exists(path))
+            {
+                return Results.BadRequest(new { error = "需要合法的 exe 路径" });
+            }
+
+            var signature = FileSignatureReader.Read(path);
+            return Results.Json(new
+            {
+                trusted = signature.Trusted,
+                signerCn = signature.SignerCn,
+            });
+        });
+
         app.MapPost("/api/pin/verify", (VerifyPinRequest body, QuotaDatabase db) =>
             Results.Json(new { ok = !PinHasher.HasPin(db) || PinHasher.VerifyPin(db, body.Pin ?? string.Empty) }));
 
@@ -306,7 +325,7 @@ public static class WinQuotaApi
         return [weekday, weekday, weekday, weekday, weekday, weekend, weekend];
     }
 
-    public sealed record AddAppRuleRequest(string Name, List<string>? ProcessNames, string? ExePath, string? ProductName, long Minutes, long? WeekendMinutes);
+    public sealed record AddAppRuleRequest(string Name, List<string>? ProcessNames, string? ExePath, string? ProductName, string? Signer, long Minutes, long? WeekendMinutes);
 
     public sealed record ProcessInfo(int Pid, string Name, string Path, string? ProductName, long WorkingSetBytes);
 

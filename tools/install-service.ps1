@@ -30,6 +30,17 @@ if (Get-Service WinQuota -ErrorAction SilentlyContinue) {
 # 故障自恢复：异常退出后自动重启（60s 内最多 3 次），即使被强制结束也会被 SCM 拉起
 & sc.exe failure WinQuota reset= 86400 actions= restart/60000/restart/60000/restart/60000 | Out-Null
 
+# 服务 ACL 加固：DACL 保护（P），仅 SYSTEM 与管理员有完全控制，
+# 受限用户无法 sc stop / sc config / sc delete 本服务
+& sc.exe sdset WinQuota "D:P(A;;GA;;;SY)(A;;GA;;;BA)" | Out-Null
+
+# 数据目录 ACL 加固：仅 SYSTEM 与管理员可访问（按 SID 指定，不受系统语言影响）。
+# 数据库与完整性密钥（winquota.db.key）不给受限用户任何权限，防直改数据 / 伪造签名。
+# 注意：仅加固默认数据目录；若用 WINQUOTA_DB 指定了其它位置，请自行设置相应 ACL。
+$dataDir = Join-Path $env:ProgramData "WinQuota"
+New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+& icacls.exe $dataDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" /grant:r "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+
 & sc.exe start WinQuota | Out-Null
 Write-Host "WinQuota 服务已安装并启动。" -ForegroundColor Green
 Write-Host "管理界面：http://127.0.0.1:58390/"

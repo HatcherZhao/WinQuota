@@ -10,3 +10,4 @@ node_modules/
 src/WinQuota.Web/dist/
 publish/
 dist/
+.mimosa/

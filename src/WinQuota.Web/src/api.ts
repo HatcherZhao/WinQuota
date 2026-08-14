@@ -76,6 +76,7 @@ export interface RuleDetail {
     exePath: string | null
     productName: string | null
     publisher: string | null
+    signer: string | null
   }[]
 }
 
@@ -84,11 +85,17 @@ export const api = {
   rules: () => request('/api/rules') as Promise<{ rules: RuleDetail[] }>,
   usage: (days: number) => request(`/api/usage?days=${days}`),
   processes: () => request('/api/processes'),
+  signature: (path: string) =>
+    request(`/api/signature?path=${encodeURIComponent(path)}`) as Promise<{
+      trusted: boolean
+      signerCn: string | null
+    }>,
   addAppRule: (body: {
     name: string
     processNames: string[]
     exePath?: string
     productName?: string
+    signer?: string
     minutes: number
     weekendMinutes?: number
   }) => request('/api/rules/app', { method: 'POST', body: JSON.stringify(body) }),

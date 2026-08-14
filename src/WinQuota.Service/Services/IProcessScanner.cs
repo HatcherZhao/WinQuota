@@ -13,4 +13,10 @@ public interface IProcessScanner
     /// 带缓存：同一 (pid, 进程名) 在 TTL 内只解析一次，控制每轮扫描的额外开销。
     /// </summary>
     Core.Engine.ProcessVersionInfo GetVersionInfo(int pid, string processName);
+
+    /// <summary>
+    /// 按需验证进程 exe 的数字签名并提取签名者 CN，用于签名者匹配（第四阶段防绕过）。
+    /// WinVerifyTrust 较昂贵（每进程几十毫秒），仅在规则配置了 Signer 时对候选进程调用，且带缓存。
+    /// </summary>
+    Core.Engine.SignatureInfo GetSignatureInfo(int pid, string processName);
 }

@@ -7,7 +7,8 @@ Windows 10 / 11 本地防沉迷工具：限制**指定应用（游戏）**的每
 ```text
 WinQuota.Service（.NET 10 WebApplication + Worker Service，本项目核心）
 ├── ToolhelpProcessScanner   Toolhelp32 快照进程扫描（纯 Win32，无 COM）
-├── RuleMatcher              进程名匹配 + 按需完整路径匹配
+├── RuleMatcher              进程名匹配 + 按需完整路径 / 产品 / 数字签名匹配
+├── FileSignatureReader      WinVerifyTrust 数字签名校验 + 签名者 CN 提取
 ├── QuotaWorker              监控主循环：扫描 → 匹配 → 计时 → 提醒 → 终止/锁定
 ├── ProcessTerminator        进程树终止（Kill(entireProcessTree)）
 ├── WtsSession               WTS 会话工具：枚举会话 / InfoEx 查询 / 用户会话内启动进程
@@ -29,7 +30,9 @@ WinQuota.Tray（WinForms 桌面程序：托盘 + WebView2 主窗口）
 WinQuota.Core（类库）
 ├── Models                   LimitRule / ApplicationRule / DailyUsage
 ├── Data                     QuotaDatabase：SQLite 持久化（WAL）
+│                            IntegrityGuard：全量 HMAC 签名 + 单调序号（防直改/回滚）
 └── Engine                   QuotaEngine（额度/剩余/提醒阈值）、AppMatcher（匹配规则）
+                             ClockGuard（时间防回拨）、UsageGuard（用量单调保护）
 ```
 
 关键设计（对应计划书）：
@@ -46,8 +49,11 @@ WinQuota.Core（类库）
 - **管理员 PIN**：SHA256 + 盐哈希存储（供后续 GUI 验证使用）
 - **系统时间防回拨**：回拨 7 天以内额度继续按原日期累计（防“改时间重置额度”），超 7 天视为时钟纠正；显著回拨会 Toast 提醒
 - **产品级识别**：规则可配置 ProductName / Publisher，用户重命名或复制 exe 后仍能命中（与进程名/路径匹配取并集）
+- **数字签名校验**：规则可配置签名者（证书 CN，需 WinVerifyTrust 校验通过），改名、复制、换目录的 exe 副本均能命中；签名验证按需触发并带缓存与每窗口预算，不影响扫描周期
 - **Job Object 进程树管控**：命中进程纳入规则 Job，其派生子进程（含改名子进程）自动入 Job；额度耗尽时一次终止整棵树
 - **服务自恢复**：安装脚本配置 SCM 故障重启策略（60 秒内最多 3 次），异常退出/被强杀后自动拉起
+- **数据库防篡改**：三层防护——① 全量 HMAC 签名（规则/用量/设置，任何直改如改小 used_seconds、调高额度、删 PIN 都会被检出）；② 单调递增序号镜像到密钥文件（winquota.db.key），把数据库回滚成旧副本同样检出；③ 运行中内存单调保护（读回值变小即自动恢复差值并告警）。检测到篡改后服务冻结数据库读写、继续按最近合法规则执行限制并每小时告警
+- **服务与数据 ACL 加固**：服务 DACL 仅允许 SYSTEM/管理员启停配置（`sc stop` 对受限用户失效）；数据目录通过 SID ACL 限制为 SYSTEM/管理员（数据库与密钥不可读不可改）。对本地管理员级攻击者只能提高门槛，无法根绝
 
 ## 构建与测试
 
@@ -67,7 +73,7 @@ dotnet test WinQuota.slnx
 
 - **今日状态**：每 5 秒刷新的剩余时间、运行中进程、整机状态、最近 7/30 天使用统计图
 - **限制规则**：启用/禁用、修改额度、临时奖励（+15/30/60 分钟）、删除
-- **添加应用**：从正在运行的程序中选择（含产品名/路径），或手动输入进程名；也可创建整机规则
+- **添加应用**：从正在运行的程序中选择（含产品名/路径），或手动输入进程名；可一键读取并记录数字签名者（改名/复制 exe 仍能识别）；也可创建整机规则
 - **设置**：管理员 PIN 设置/修改
 
 API 仅监听回环地址并校验 Host 头；查询类接口免鉴权，规则修改等敏感操作需要 PIN（请求头 `X-WinQuota-Pin`）。未设置 PIN 时敏感操作放行（首次使用），建议装好后立即设置。
@@ -119,7 +125,7 @@ sc create WinQuota binPath= "C:\WinQuota\WinQuota.Service.exe" start= auto obj= 
 sc start WinQuota
 ```
 
-- 数据库默认位于 `%ProgramData%\WinQuota\winquota.db`（可用 `WINQUOTA_DB` 环境变量或 `--db` 覆盖）
+- 数据库默认位于 `%ProgramData%\WinQuota\winquota.db`（可用 `WINQUOTA_DB` 环境变量或 `--db` 覆盖），完整性密钥位于同目录 `winquota.db.key`（勿删改；数据目录已被 ACL 限制为 SYSTEM/管理员）
 - 日志位于 `%ProgramData%\WinQuota\logs\`（滚动保留 14 天）
 - 直接运行 exe 即为控制台模式（便于调试），命令行参数则为 CLI 管理模式
 - 可通过环境变量覆盖配置（`WinQuota__` 前缀），如 `WinQuota__IdleThresholdSeconds=600`、`WinQuota__ComputerExhaustedAction=NotifyOnly`
@@ -139,12 +145,14 @@ winquota bonus --id 1 --minutes 15      # 当天临时奖励（应用与整机�
 winquota pin set | pin verify --value <PIN> | pin has
 winquota debug scan                     # 诊断：扫描进程并显示各规则匹配结果
 winquota debug session                  # 诊断：当前会话状态（锁屏/空闲判定原始数据）
-winquota debug lock                     # 立即锁定当前会话
+winquota debug lock                     # 诊断：立即锁定当前会话
+winquota debug integrity                # 诊断：数据库完整性校验（直改/回滚/密钥状态）
+winquota debug signature <exe路径>      # 诊断：验证 exe 数字签名并显示签名者 CN
 ```
 
-`rules add` 可选 `--path <exe完整路径>`：配置后按路径精确匹配（防止改名/复制绕过），未配置时按进程名匹配（不区分大小写）。
+`rules add` 可选 `--path <exe完整路径>`：配置后按路径精确匹配（防止改名/复制绕过），未配置时按进程名匹配（不区分大小写）；`--signer <签名者CN>`：配置后任何由该签名者有效签名的 exe 都会命中（最强识别方式，先用 `debug signature <exe路径>` 查询实际签名者）。
 
-## 当前状态（第一~三阶段完成，第四阶段已启动）
+## 当前状态（第一~四阶段完成，v0.6.0）
 
 第一阶段（应用限制）已实测验证：进程识别 → 1:1 精确计时 → 额度耗尽自动终止 → 再启动 5 秒内阻止 → 临时奖励即时生效 → Toast 通知 → 每日自动恢复（单测覆盖）。
 
@@ -152,4 +160,6 @@ winquota debug lock                     # 立即锁定当前会话
 
 第三阶段（使用体验）已完成：服务直接托管 Vue 3 管理界面（四页面 + 进程选择器 + exe 图标 + 7/30 天统计图 + PIN 门控）、本机 JSON API、ProductName 自动读取、托盘程序（状态/管理界面/锁定/自启/PIN 退出）、CLI `usage --days` 与 `debug lock`。API 已 curl 全流程冒烟，界面与托盘均已实测。
 
-第四阶段（防绕过）进行中，已完成：系统时间回拨检测与额度日期钳制、产品级识别（ProductName/Publisher，重命名 exe 仍命中）、Job Object 进程树管控（换名子进程一并终止）、服务安装脚本 + SCM 故障自恢复。前三项均有单测或端到端实测。待办：数字签名校验、服务 ACL 加固、配置完整性校验、数据库防篡改（对本地管理员级别的攻击者只能提高门槛，无法根绝）。
+第四阶段（防绕过）已完成：系统时间回拨检测与额度日期钳制、产品级识别（ProductName/Publisher）、数字签名校验（WinVerifyTrust + 签名者 CN 匹配，实测 dotnet.exe 等内嵌签名可命中）、Job Object 进程树管控、服务自恢复与 SCM/数据目录双 ACL 加固、数据库防篡改三层防护（HMAC 全量签名 / 单调序号防回滚 / 运行时用量单调保护，直改、回滚、删 PIN、删基线行均有单测或端到端实测覆盖）。
+
+已知边界（与设计一致）：对拥有本地管理员权限或可物理接触机器的攻击者，防篡改只能提高门槛、无法根绝——请确保被限制用户使用标准账户；Windows 系统自带程序多为目录签名（catalog）而非内嵌签名，`debug signature` 会显示"无效或未签名"，属正常现象，游戏与第三方软件通常为内嵌签名。

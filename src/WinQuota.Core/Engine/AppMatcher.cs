@@ -54,4 +54,18 @@ public static class AppMatcher
 
         return !string.IsNullOrWhiteSpace(info.ProductName) || !string.IsNullOrWhiteSpace(info.CompanyName);
     }
+
+    /// <summary>
+    /// 签名者匹配（第四阶段防绕过）：规则配置了 Signer 时，exe 必须通过数字签名校验
+    /// （文件未被修改）且签名者 CN 与配置一致才命中。签名内嵌于 exe，重命名 / 复制 / 换目录均不影响。
+    /// </summary>
+    public static bool MatchesBySignature(SignatureInfo info, ApplicationRule appRule)
+    {
+        if (!appRule.Enabled || string.IsNullOrWhiteSpace(appRule.Signer) || !info.Trusted)
+        {
+            return false;
+        }
+
+        return string.Equals(info.SignerCn, appRule.Signer, StringComparison.OrdinalIgnoreCase);
+    }
 }

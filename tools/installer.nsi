@@ -4,7 +4,7 @@
 
 !include "MUI2.nsh"
 
-!define VERSION "0.5.0"
+!define VERSION "0.6.0"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WinQuota"
 
 Name "WinQuota 防沉迷 ${VERSION}"
@@ -21,7 +21,7 @@ VIAddVersionKey "ProductName" "WinQuota"
 VIAddVersionKey "FileDescription" "WinQuota 防沉迷安装程序"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "WinQuota"
-VIProductVersion "0.5.0.0"
+VIProductVersion "0.6.0.0"
 
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -65,6 +65,12 @@ Section "WinQuota 核心（后台服务 + 管理界面 + 托盘）" SecCore
   nsExec::ExecToLog 'sc.exe description WinQuota $\"WinQuota 防沉迷：进程监控、每日额度、时间限制。停止或删除本服务将导致限制失效。$\"'
   ; 故障自恢复：异常退出/被强杀后由 SCM 自动重启
   nsExec::ExecToLog 'sc.exe failure WinQuota reset= 86400 actions= restart/60000/restart/60000/restart/60000'
+  ; 服务 ACL 加固：DACL 保护（P），仅 SYSTEM 与管理员可启停/配置服务
+  nsExec::ExecToLog 'sc.exe sdset WinQuota $\"D:P(A;;GA;;;SY)(A;;GA;;;BA)$\"'
+  ; 数据目录 ACL 加固（按 SID 指定，不受系统语言影响）：数据库与完整性密钥仅 SYSTEM/管理员可访问
+  ExpandEnvStrings $0 "%ProgramData%"
+  CreateDirectory "$0\WinQuota"
+  nsExec::ExecToLog 'icacls.exe "$0\WinQuota" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F /grant:r *S-1-5-32-544:(OI)(CI)F'
   nsExec::ExecToLog 'sc.exe start WinQuota'
 
   WriteRegStr HKLM "Software\WinQuota" "InstallDir" "$INSTDIR"

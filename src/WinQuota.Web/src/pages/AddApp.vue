@@ -9,8 +9,11 @@ const mode = ref<'app' | 'computer'>('app')
 const appName = ref('')
 const processNamesText = ref('')
 const exePath = ref('')
+const signerText = ref('')
 const appMinutes = ref(120)
 const appWeekendMinutes = ref(120)
+const lastPickedPath = ref('')
+const signatureChecking = ref(false)
 
 // —— 运行进程选择器 ——
 const pickerVisible = ref(false)
@@ -71,10 +74,35 @@ function confirmPicker() {
   if (!exePath.value && selected.length === 1) {
     exePath.value = ''
   }
+  lastPickedPath.value = selected[0].path || ''
 
   pickerVisible.value = false
   selectedKeys.value = []
   Message.success(`已添加 ${byName.size} 个进程名，可在下方继续调整`)
+}
+
+// 读取 exe 的数字签名并填入签名者（重命名/复制 exe 后仍能命中规则）
+async function detectSignature() {
+  const path = exePath.value.trim() || lastPickedPath.value
+  if (!path) {
+    Message.warning('请先填写完整路径，或从正在运行的程序中选择')
+    return
+  }
+
+  signatureChecking.value = true
+  try {
+    const result = await api.signature(path)
+    if (result.trusted && result.signerCn) {
+      signerText.value = result.signerCn
+      Message.success(`已读取签名者：${result.signerCn}`)
+    } else {
+      Message.warning('该程序没有有效的数字签名（未签名或文件被修改），无法使用签名者匹配')
+    }
+  } catch (e: any) {
+    if (e.name !== 'PinRequiredError') Message.error(e.message)
+  } finally {
+    signatureChecking.value = false
+  }
 }
 
 async function submitApp() {
@@ -92,6 +120,7 @@ async function submitApp() {
       name: appName.value.trim(),
       processNames: names,
       exePath: exePath.value.trim() || undefined,
+      signer: signerText.value.trim() || undefined,
       minutes: appMinutes.value,
       weekendMinutes: appWeekendMinutes.value,
     })
@@ -99,6 +128,7 @@ async function submitApp() {
     appName.value = ''
     processNamesText.value = ''
     exePath.value = ''
+    signerText.value = ''
   } catch (e: any) {
     if (e.name !== 'PinRequiredError') Message.error(e.message)
   }
@@ -143,6 +173,14 @@ async function submitComputer() {
         </a-form-item>
         <a-form-item label="完整路径匹配（可选，填写后仅匹配该路径的程序）">
           <a-input v-model="exePath" placeholder="留空则按进程名匹配" />
+        </a-form-item>
+        <a-form-item label="数字签名者（可选，防改名/复制绕过的最强识别方式）">
+          <a-input v-model="signerText" placeholder="如 Tencent Technology(Shenzhen) Company Limited">
+            <template #append>
+              <a-button size="mini" :loading="signatureChecking" @click="detectSignature">读取签名</a-button>
+            </template>
+          </a-input>
+          <template #extra>配置后，任何由该签名者有效签名且未篡改的 exe 都会命中规则（含改名后的副本）</template>
         </a-form-item>
         <a-form-item label="每日额度（分钟）">
           <a-space size="large">

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using WinQuota.Core.Data;
 using WinQuota.Core.Engine;
 using WinQuota.Core.Models;
@@ -109,6 +109,15 @@ public static class CommandLine
             {
                 var match = string.IsNullOrEmpty(app.ExePath) ? app.ProcessName : $"{app.ExePath}";
                 Console.WriteLine($"    进程：{match}");
+                if (!string.IsNullOrWhiteSpace(app.ProductName))
+                {
+                    Console.WriteLine($"    产品：{app.ProductName}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(app.Signer))
+                {
+                    Console.WriteLine($"    签名者：{app.Signer}");
+                }
             }
         }
 
@@ -138,6 +147,7 @@ public static class CommandLine
         var weekendMinutes = TryGetLong(options, "weekend-minutes", out var wm) && wm > 0 ? wm : weekdayMinutes;
         options.TryGetValue("path", out var paths);
         options.TryGetValue("product", out var products);
+        options.TryGetValue("signer", out var signers);
 
         var weekdayLimits = new[]
         {
@@ -150,7 +160,9 @@ public static class CommandLine
             weekdayLimits,
             processes,
             paths?.FirstOrDefault(),
-            products?.FirstOrDefault());
+            products?.FirstOrDefault(),
+            null,
+            signers?.FirstOrDefault());
         Console.WriteLine($"已创建规则 #{ruleId}：{names[0]}，工作日 {weekdayMinutes} 分钟 / 周末 {weekendMinutes} 分钟");
         Console.WriteLine("（若后台服务已在运行，新规则将在下一个扫描周期生效）");
         return 0;
@@ -367,15 +379,56 @@ public static class CommandLine
                 return DebugSession();
             case "lock":
                 return DebugLock();
+            case "integrity":
+                return DebugIntegrity(database);
+            case "signature":
+            {
+                if (args.Count < 2)
+                {
+                    Console.Error.WriteLine("需要 exe 完整路径：winquota debug signature C:\\path\\to.exe");
+                    return 1;
+                }
+
+                var signature = Services.FileSignatureReader.Read(args[1]);
+                Console.WriteLine(signature.Trusted
+                    ? $"签名有效，签名者：{signature.SignerCn}"
+                    : "签名无效或未签名（不可用于签名者匹配）");
+                return signature.Trusted ? 0 : 2;
+            }
             default:
                 Console.WriteLine("""
                     用法：
-                      winquota debug scan    —— 扫描进程并显示每条规则的匹配结果
-                      winquota debug session —— 显示当前会话状态（锁屏 / 空闲判定原始数据）
-                      winquota debug lock    —— 立即锁定当前会话（实测锁定通道）
+                      winquota debug scan      —— 扫描进程并显示每条规则的匹配结果
+                      winquota debug session   —— 显示当前会话状态（锁屏 / 空闲判定原始数据）
+                      winquota debug lock      —— 立即锁定当前会话（实测锁定通道）
+                      winquota debug integrity —— 校验数据库完整性（检测直改 / 回滚 / 密钥状态）
+                      winquota debug signature <exe路径> —— 验证 exe 数字签名并显示签名者
                     """);
                 return 0;
         }
+    }
+
+    private static int DebugIntegrity(QuotaDatabase database)
+    {
+        var status = database.VerifyIntegrity();
+        var text = status switch
+        {
+            WinQuota.Core.Data.IntegrityStatus.Ok => "通过：数据未被篡改",
+            WinQuota.Core.Data.IntegrityStatus.Tampered => "失败：数据被直改或数据库文件被回滚（服务将冻结数据库读写并告警）",
+            WinQuota.Core.Data.IntegrityStatus.NoBaseline => "基线缺失（签名行被删除或完整性防护未启用）",
+            WinQuota.Core.Data.IntegrityStatus.KeyMissing => "密钥文件缺失（winquota.db.key 不在数据库同目录）",
+            _ => status.ToString(),
+        };
+        Console.WriteLine($"数据库：{database.DatabasePath}");
+        Console.WriteLine($"完整性：{text}");
+        Console.WriteLine($"密钥文件：{(database.HasIntegrityKey ? "存在" : "缺失")}");
+        if (status != WinQuota.Core.Data.IntegrityStatus.Ok)
+        {
+            Console.WriteLine("若确认为环境变化（如重装/迁移）所致，可在服务停止后删除密钥文件并重启服务以重建基线。");
+            return 2;
+        }
+
+        return 0;
     }
 
     private static int DebugScan(QuotaDatabase database)

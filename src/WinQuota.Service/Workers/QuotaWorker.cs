@@ -34,6 +34,13 @@ public sealed class QuotaWorker : BackgroundService
     private long _lastMonotonicTicks;
     private DateTime _lastTamperNotifyUtc = DateTime.MinValue;
 
+    // 数据库完整性防篡改状态（第四阶段）
+    private IReadOnlyList<(LimitRule Rule, IReadOnlyList<ApplicationRule> Apps)>? _lastGoodRules;
+    private bool _integrityFrozen;
+    private DateTime _lastIntegrityAlertUtc = DateTime.MinValue;
+    private DateTime _lastUsageTamperNotifyUtc = DateTime.MinValue;
+    private bool _keyLossHandled;
+
     public QuotaWorker(
         QuotaDatabase database,
         IProcessScanner scanner,
@@ -107,7 +114,10 @@ public sealed class QuotaWorker : BackgroundService
         var now = DateTime.Now;
         var today = ResolveEffectiveDate(now);
 
-        var rules = _database.GetRules(enabledFilter: true);
+        // 完整性校验在一切读取之前：被篡改的库不允许影响本轮的规则与用量。
+        MaintainIntegrityState();
+        var rules = LoadRulesForEnforcement();
+
         var snapshots = _scanner.Snapshot();
 
         // 整机使用状态只在存在整机规则时查询（WTS 调用），并记录状态变化便于排查。
@@ -149,8 +159,9 @@ public sealed class QuotaWorker : BackgroundService
 
             var runtime = GetRuntime(rule.Id, today);
 
-            // 每轮从数据库读取最新用量与奖励，保证 CLI / 管理端的修改即时生效。
-            var usage = _database.GetOrCreateUsage(rule.Id, today);
+            // 每轮从数据库读取最新用量与奖励，保证 CLI / 管理端的修改即时生效；
+            // 读取同时做单调保护：已用被改小 / 奖励被删时自动恢复并告警。
+            var usage = ReadUsageWithGuard(rule.Id, today, runtime);
             var totalQuota = QuotaEngine.TotalQuotaSeconds(rule.QuotaFor(today), usage.BonusSeconds);
             var usedBefore = usage.UsedSeconds + runtime.PendingDeltaSeconds;
             var usedAfter = usedBefore + elapsedSeconds;
@@ -257,6 +268,109 @@ public sealed class QuotaWorker : BackgroundService
         return effective;
     }
 
+    /// <summary>
+    /// 每轮开始时校验数据库完整性（第四阶段防绕过）：
+    /// - 校验通过：刷新“最近合法规则”缓存，正常执行；
+    /// - 数据被直改 / 数据库文件被回滚 / 基线行被删：进入冻结状态——继续按最近合法规则
+    ///   与内存用量执行限制（终止/锁定照常），但不再读写数据库，并每小时 Toast 告警；
+    /// - 密钥文件丢失（如重装/迁移导致）：首次自动重建基线并告警，其后不再静默重建。
+    /// </summary>
+    private void MaintainIntegrityState()
+    {
+        var status = _database.VerifyIntegrity();
+        if (status == IntegrityStatus.Ok)
+        {
+            if (_integrityFrozen)
+            {
+                _logger.LogWarning("数据库完整性校验恢复正常");
+            }
+
+            _integrityFrozen = false;
+            return;
+        }
+
+        var keyLoss = status == IntegrityStatus.KeyMissing || (status == IntegrityStatus.NoBaseline && !_database.HasIntegrityKey);
+        if (keyLoss && !_keyLossHandled)
+        {
+            // 密钥与库一起丢失更可能是重装/迁移：重建基线（当前数据被签名）并留下记录
+            _keyLossHandled = true;
+            _logger.LogWarning("完整性密钥文件缺失（状态 {Status}），已重建基线；若非重装导致请检查数据", status);
+            _database.ReinitializeIntegrity();
+            return;
+        }
+
+        _integrityFrozen = true;
+        _logger.LogError("数据库完整性校验失败（状态 {Status}），冻结数据库读写，继续按最近合法规则执行限制", status);
+        if (DateTime.UtcNow - _lastIntegrityAlertUtc > TimeSpan.FromHours(1))
+        {
+            _lastIntegrityAlertUtc = DateTime.UtcNow;
+            _notifier.Notify("WinQuota 防沉迷", "检测到限制数据被异常修改，限制仍按此前规则继续执行，请管理员检查。");
+        }
+    }
+
+    /// <summary>完整性正常时从数据库读取并刷新缓存；冻结期间沿用最近一次合法的规则列表。</summary>
+    private IReadOnlyList<(LimitRule Rule, IReadOnlyList<ApplicationRule> Apps)> LoadRulesForEnforcement()
+    {
+        if (!_integrityFrozen)
+        {
+            _lastGoodRules = _database.GetRules(enabledFilter: true);
+            return _lastGoodRules;
+        }
+
+        if (_lastGoodRules is not null)
+        {
+            return _lastGoodRules;
+        }
+
+        // 服务启动时库已处于被篡改状态：没有更好的来源，读取现状并保持告警
+        _logger.LogWarning("启动时数据库完整性异常，暂按当前读取的规则执行");
+        return _database.GetRules(enabledFilter: true);
+    }
+
+    /// <summary>
+    /// 读取当天用量并做单调保护：已用秒数当天只增不减，奖励只经管理员操作增长；
+    /// 数据库读回值小于内存记住的最大值说明有人直改数据库，自动把差值写回并告警。
+    /// 冻结期间不读数据库，完全按内存值继续计时。
+    /// </summary>
+    private DailyUsage ReadUsageWithGuard(long ruleId, DateOnly today, RuleRuntime runtime)
+    {
+        if (_integrityFrozen)
+        {
+            return new DailyUsage { RuleId = ruleId, UsageDate = today, UsedSeconds = runtime.LastReadDbUsed, BonusSeconds = runtime.KnownBonus };
+        }
+
+        var usage = _database.GetOrCreateUsage(ruleId, today);
+        if (UsageGuard.IsTampered(usage.UsedSeconds, runtime.KnownDbUsed, usage.BonusSeconds, runtime.KnownBonus))
+        {
+            var missingUsed = runtime.KnownDbUsed - usage.UsedSeconds;
+            var missingBonus = runtime.KnownBonus - usage.BonusSeconds;
+            _logger.LogError("规则 {RuleId} 用量被直改（数据库 {DbUsed}s/{DbBonus}s < 记忆 {KnownUsed}s/{KnownBonus}s），自动恢复",
+                ruleId, usage.UsedSeconds, usage.BonusSeconds, runtime.KnownDbUsed, runtime.KnownBonus);
+            if (missingUsed > 1)
+            {
+                _database.AddUsedSeconds(ruleId, today, missingUsed);
+            }
+
+            if (missingBonus > 0)
+            {
+                _database.AddBonusSeconds(ruleId, today, missingBonus);
+            }
+
+            if (DateTime.UtcNow - _lastUsageTamperNotifyUtc > TimeSpan.FromHours(1))
+            {
+                _lastUsageTamperNotifyUtc = DateTime.UtcNow;
+                _notifier.Notify("WinQuota 防沉迷", "检测到今日使用数据被异常修改，已自动恢复。");
+            }
+
+            usage = _database.GetOrCreateUsage(ruleId, today);
+        }
+
+        runtime.LastReadDbUsed = usage.UsedSeconds;
+        runtime.KnownDbUsed = Math.Max(runtime.KnownDbUsed, usage.UsedSeconds);
+        runtime.KnownBonus = Math.Max(runtime.KnownBonus, usage.BonusSeconds);
+        return usage;
+    }
+
     private RuleRuntime GetRuntime(long ruleId, DateOnly today)
     {
         if (_runtimes.TryGetValue(ruleId, out var runtime) && runtime.Date == today)
@@ -277,9 +391,17 @@ public sealed class QuotaWorker : BackgroundService
 
     private void Flush(RuleRuntime runtime)
     {
+        // 完整性冻结期间不写数据库：写入会立即重签被篡改的数据，掩盖篡改痕迹
+        if (_integrityFrozen)
+        {
+            return;
+        }
+
         if (runtime.PendingDeltaSeconds > 0)
         {
             _database.AddUsedSeconds(runtime.RuleId, runtime.Date, runtime.PendingDeltaSeconds);
+            runtime.LastReadDbUsed += runtime.PendingDeltaSeconds;
+            runtime.KnownDbUsed = Math.Max(runtime.KnownDbUsed, runtime.LastReadDbUsed);
             runtime.PendingDeltaSeconds = 0;
         }
 
@@ -309,5 +431,10 @@ public sealed class QuotaWorker : BackgroundService
         public HashSet<int> FiredReminders { get; } = [];
         public DateTime LastFlushUtc { get; set; } = DateTime.MinValue;
         public DateTime? LastExhaustedNotifyUtc { get; set; }
+
+        // 用量单调保护（第四阶段防绕过）：当天见过的数据库侧最大已用 / 奖励，以及最近一次读回的已用值
+        public long KnownDbUsed { get; set; }
+        public long KnownBonus { get; set; }
+        public long LastReadDbUsed { get; set; }
     }
 }

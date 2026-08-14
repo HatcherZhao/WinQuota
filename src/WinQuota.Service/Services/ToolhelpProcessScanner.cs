@@ -17,9 +17,12 @@ public sealed class ToolhelpProcessScanner : IProcessScanner
     private readonly ILogger<ToolhelpProcessScanner> _logger;
     private readonly object _versionCacheGate = new();
     private Dictionary<(int Pid, string Name), (DateTime SeenUtc, Core.Engine.ProcessVersionInfo Info)> _versionCache = new();
+    private Dictionary<(int Pid, string Name), (DateTime SeenUtc, Core.Engine.SignatureInfo Info)> _signatureCache = new();
 
     private static readonly TimeSpan VersionCacheTtl = TimeSpan.FromMinutes(2);
     private const int VersionCacheMaxEntries = 4096;
+    private const int FreshSignatureVerifiesPerWindow = 30;
+    private (DateTime WindowStartUtc, int Count) _signatureBudget = (DateTime.MinValue, 0);
 
     public ToolhelpProcessScanner(ILogger<ToolhelpProcessScanner> logger)
     {
@@ -121,6 +124,53 @@ public sealed class ToolhelpProcessScanner : IProcessScanner
         }
 
         return info;
+    }
+
+    public Core.Engine.SignatureInfo GetSignatureInfo(int pid, string processName)
+    {
+        var key = (pid, processName);
+        lock (_versionCacheGate)
+        {
+            if (_signatureCache.TryGetValue(key, out var entry) && DateTime.UtcNow - entry.SeenUtc < VersionCacheTtl)
+            {
+                return entry.Info;
+            }
+        }
+
+        // WinVerifyTrust 较昂贵（每进程数毫秒到数十毫秒），限制每个时间窗口内的新验证次数；
+        // 预算耗尽时本轮返回“不可信”且不缓存，下轮窗口再验证，避免大进程表拖慢扫描周期。
+        var now = DateTime.UtcNow;
+        lock (_versionCacheGate)
+        {
+            if (now - _signatureBudget.WindowStartUtc > TimeSpan.FromSeconds(5))
+            {
+                _signatureBudget = (now, 0);
+            }
+
+            if (_signatureBudget.Count >= FreshSignatureVerifiesPerWindow)
+            {
+                return default;
+            }
+
+            _signatureBudget = (_signatureBudget.WindowStartUtc, _signatureBudget.Count + 1);
+        }
+
+        var path = TryGetExecutablePath(pid);
+        var signature = string.IsNullOrEmpty(path)
+            ? default(Core.Engine.SignatureInfo)
+            : FileSignatureReader.Read(path);
+
+        lock (_versionCacheGate)
+        {
+            if (_signatureCache.Count >= VersionCacheMaxEntries)
+            {
+                _signatureCache.Clear();
+            }
+
+            _signatureCache[key] = (DateTime.UtcNow, signature);
+        }
+
+        return signature;
     }
 
     private static class NativeMethods
