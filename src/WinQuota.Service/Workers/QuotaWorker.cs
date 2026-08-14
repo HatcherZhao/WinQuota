@@ -20,6 +20,7 @@ public sealed class QuotaWorker : BackgroundService
     private readonly INotifier _notifier;
     private readonly IComputerUsageMonitor _computerUsageMonitor;
     private readonly IWorkstationLocker _workstationLocker;
+    private readonly IJobObjectManager _jobObjectManager;
     private readonly LiveStatus _liveStatus;
     private readonly ILogger<QuotaWorker> _logger;
     private readonly WinQuotaOptions _options;
@@ -40,6 +41,7 @@ public sealed class QuotaWorker : BackgroundService
         INotifier notifier,
         IComputerUsageMonitor computerUsageMonitor,
         IWorkstationLocker workstationLocker,
+        IJobObjectManager jobObjectManager,
         LiveStatus liveStatus,
         IOptions<WinQuotaOptions> options,
         ILogger<QuotaWorker> logger)
@@ -50,6 +52,7 @@ public sealed class QuotaWorker : BackgroundService
         _notifier = notifier;
         _computerUsageMonitor = computerUsageMonitor;
         _workstationLocker = workstationLocker;
+        _jobObjectManager = jobObjectManager;
         _liveStatus = liveStatus;
         _logger = logger;
         _options = options.Value;
@@ -132,6 +135,13 @@ public sealed class QuotaWorker : BackgroundService
 
             if (!isComputerRule && matched.Count > 0)
             {
+                // 进程纳入规则 Job Object：之后其派生的子进程自动进入，
+                // 耗尽时可以一次终止整棵树（含换了名字的子进程）。
+                foreach (var process in matched)
+                {
+                    _jobObjectManager.AssignToRule(rule.Id, process.Pid);
+                }
+
                 liveMatched[rule.Id] = matched
                     .Select(m => new LiveStatus.RunningProcess(m.Pid, m.ProcessName))
                     .ToList();
@@ -176,6 +186,8 @@ public sealed class QuotaWorker : BackgroundService
                 {
                     _logger.LogWarning("规则 {Rule} 今日额度已耗尽（已用 {Used}s / {Total}s），终止 {Count} 个进程",
                         rule.Name, usedAfter, totalQuota, matched.Count);
+                    // 先终止 Job Object（覆盖换名子进程），再按匹配列表兜底终止。
+                    _jobObjectManager.TerminateRule(rule.Id);
                     _terminator.Terminate(matched);
                 }
 

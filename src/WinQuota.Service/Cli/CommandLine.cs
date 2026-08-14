@@ -505,7 +505,8 @@ public static class CommandLine
 
             用法：
               winquota rules add --name <名称> --process <进程名> [--process <进程名>...] [--path <exe完整路径>]
-                                 [--minutes <工作日分钟>] [--weekend-minutes <周末分钟>]
+                                 [--product <产品名>] [--minutes <工作日分钟>] [--weekend-minutes <周末分钟>]
+                                 （--product 按 exe 内嵌 ProductName 匹配，重命名/复制 exe 后依然命中）
               winquota rules add-computer --name <名称> --minutes <工作日分钟> [--weekend-minutes <周末分钟>]
               winquota rules list
               winquota rules enable --id <编号> | rules disable --id <编号>

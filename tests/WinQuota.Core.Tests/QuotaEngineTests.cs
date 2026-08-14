@@ -86,4 +86,38 @@ public class AppMatcherTests
     {
         Assert.False(AppMatcher.Matches("foxwqclient.exe", null, App("foxwq.exe")));
     }
+
+    [Fact]
+    public void MatchesByProduct_HitsWhenProductNameEquals_IgnoringCase()
+    {
+        var rule = new ApplicationRule { ProcessName = "renamed.exe", ProductName = "野狐围棋", Enabled = true };
+        var info = new Engine.ProcessVersionInfo("野狐围棋", "FoxWQ Inc.", @"D:\copied\whatever.exe");
+        Assert.True(AppMatcher.MatchesByProduct(info, rule));
+
+        var mismatched = new Engine.ProcessVersionInfo("别的产品", "FoxWQ Inc.", null);
+        Assert.False(AppMatcher.MatchesByProduct(mismatched, rule));
+    }
+
+    [Fact]
+    public void MatchesByProduct_RequiresBothWhenBothConfigured()
+    {
+        var rule = new ApplicationRule { ProductName = "野狐围棋", Publisher = "FoxWQ Inc.", Enabled = true };
+        Assert.True(AppMatcher.MatchesByProduct(new("野狐围棋", "FoxWQ Inc.", null), rule));
+        Assert.False(AppMatcher.MatchesByProduct(new("野狐围棋", "其他公司", null), rule));
+    }
+
+    [Fact]
+    public void MatchesByProduct_IgnoresRulesWithoutProductCriteria()
+    {
+        var rule = new ApplicationRule { ProcessName = "foxwq.exe", Enabled = true };
+        Assert.False(AppMatcher.MatchesByProduct(new("任何产品", "任何公司", null), rule));
+    }
+
+    [Fact]
+    public void MatchesByProduct_IgnoresEmptyProcessInfo()
+    {
+        var rule = new ApplicationRule { ProductName = "野狐围棋", Enabled = true };
+        Assert.False(AppMatcher.MatchesByProduct(new(null, null, null), rule));
+        Assert.False(AppMatcher.MatchesByProduct(new(null, null, null), new ApplicationRule { Publisher = "X", Enabled = true }));
+    }
 }

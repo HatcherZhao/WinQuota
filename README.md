@@ -14,6 +14,7 @@ WinQuota.Service（.NET 10 WebApplication + Worker Service，本项目核心）
 ├── WtsComputerUsageMonitor  整机使用状态：活动 / 锁屏 / 空闲 / 无会话
 ├── UserSessionWorkstationLocker  用户会话内执行锁屏（rundll32 LockWorkStation）
 ├── UserSessionNotifier      用户会话 Toast 通知（msg.exe 回退）
+├── JobObjectManager         按规则的 Job Object：命中进程入 Job，子进程自动继承，耗尽时整树终止
 ├── LiveStatus               实时状态快照（供管理界面轮询）
 ├── Api/WinQuotaApi          本机 JSON API（127.0.0.1，PIN 鉴权，Host 校验）
 └── CommandLine              规则 / 用量 / 奖励 / PIN 管理命令行
@@ -44,6 +45,9 @@ WinQuota.Core（类库）
 - **临时奖励**：管理员可为当天追加额度（如 +15 分钟），次日自动失效
 - **管理员 PIN**：SHA256 + 盐哈希存储（供后续 GUI 验证使用）
 - **系统时间防回拨**：回拨 7 天以内额度继续按原日期累计（防“改时间重置额度”），超 7 天视为时钟纠正；显著回拨会 Toast 提醒
+- **产品级识别**：规则可配置 ProductName / Publisher，用户重命名或复制 exe 后仍能命中（与进程名/路径匹配取并集）
+- **Job Object 进程树管控**：命中进程纳入规则 Job，其派生子进程（含改名子进程）自动入 Job；额度耗尽时一次终止整棵树
+- **服务自恢复**：安装脚本配置 SCM 故障重启策略（60 秒内最多 3 次），异常退出/被强杀后自动拉起
 
 ## 构建与测试
 
@@ -78,11 +82,19 @@ API 仅监听回环地址并校验 Host 头；查询类接口免鉴权，规则�
 
 ## 部署为 Windows 服务
 
-以管理员身份：
+推荐使用安装脚本（自动配置故障自恢复策略）：
 
 ```bash
 dotnet publish src/WinQuota.Service -c Release -r win-x64 --self-contained false -o C:\WinQuota
+# 管理员 PowerShell：
+powershell -ExecutionPolicy Bypass -File tools\install-service.ps1 -InstallDir C:\WinQuota
+# 卸载：
+powershell -ExecutionPolicy Bypass -File tools\uninstall-service.ps1
+```
 
+手动方式（不带自恢复配置）：
+
+```bash
 sc create WinQuota binPath= "C:\WinQuota\WinQuota.Service.exe" start= auto obj= LocalSystem
 sc start WinQuota
 ```
@@ -120,4 +132,4 @@ winquota debug lock                     # 立即锁定当前会话
 
 第三阶段（使用体验）已完成：服务直接托管 Vue 3 管理界面（四页面 + 进程选择器 + exe 图标 + 7/30 天统计图 + PIN 门控）、本机 JSON API、ProductName 自动读取、托盘程序（状态/管理界面/锁定/自启/PIN 退出）、CLI `usage --days` 与 `debug lock`。API 已 curl 全流程冒烟，界面与托盘均已实测。
 
-第四阶段（防绕过）已启动：系统时间回拨检测与额度日期钳制（单测覆盖）。待办：Job Object / 进程树跟踪、数字签名与 Publisher/ProductName 识别、服务 ACL 保护、配置完整性校验、数据库防篡改。
+第四阶段（防绕过）进行中，已完成：系统时间回拨检测与额度日期钳制、产品级识别（ProductName/Publisher，重命名 exe 仍命中）、Job Object 进程树管控（换名子进程一并终止）、服务安装脚本 + SCM 故障自恢复。前三项均有单测或端到端实测。待办：数字签名校验、服务 ACL 加固、配置完整性校验、数据库防篡改（对本地管理员级别的攻击者只能提高门槛，无法根绝）。

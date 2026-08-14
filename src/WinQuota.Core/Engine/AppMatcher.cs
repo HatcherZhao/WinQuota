@@ -22,4 +22,36 @@ public static class AppMatcher
 
         return string.Equals(processName, appRule.ProcessName, StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// 产品级匹配（第四阶段防绕过）：用户重命名或复制 exe 后进程名失效，
+    /// 但 exe 内嵌的 ProductName / CompanyName（Publisher）不变。
+    /// 规则配置了至少一项产品条件且全部满足（配置了的项）时命中。
+    /// </summary>
+    public static bool MatchesByProduct(ProcessVersionInfo info, ApplicationRule appRule)
+    {
+        if (!appRule.Enabled)
+        {
+            return false;
+        }
+
+        var hasProduct = !string.IsNullOrWhiteSpace(appRule.ProductName);
+        var hasPublisher = !string.IsNullOrWhiteSpace(appRule.Publisher);
+        if (!hasProduct && !hasPublisher)
+        {
+            return false; // 未配置产品条件，不参与产品匹配
+        }
+
+        if (hasProduct && !string.Equals(info.ProductName, appRule.ProductName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (hasPublisher && !string.Equals(info.CompanyName, appRule.Publisher, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(info.ProductName) || !string.IsNullOrWhiteSpace(info.CompanyName);
+    }
 }

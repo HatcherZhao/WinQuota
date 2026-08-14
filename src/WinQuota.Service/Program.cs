@@ -44,6 +44,7 @@ builder.Services.AddSingleton<IProcessTerminator, ProcessTerminator>();
 builder.Services.AddSingleton<INotifier, UserSessionNotifier>();
 builder.Services.AddSingleton<IComputerUsageMonitor, WtsComputerUsageMonitor>();
 builder.Services.AddSingleton<IWorkstationLocker, UserSessionWorkstationLocker>();
+builder.Services.AddSingleton<IJobObjectManager, JobObjectManager>();
 builder.Services.AddSingleton<LiveStatus>();
 builder.Services.AddHostedService<QuotaWorker>();
 

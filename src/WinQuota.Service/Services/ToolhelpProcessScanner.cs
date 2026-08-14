@@ -15,6 +15,11 @@ public sealed class ToolhelpProcessScanner : IProcessScanner
     private static readonly IntPtr InvalidHandleValue = new(-1);
 
     private readonly ILogger<ToolhelpProcessScanner> _logger;
+    private readonly object _versionCacheGate = new();
+    private Dictionary<(int Pid, string Name), (DateTime SeenUtc, Core.Engine.ProcessVersionInfo Info)> _versionCache = new();
+
+    private static readonly TimeSpan VersionCacheTtl = TimeSpan.FromMinutes(2);
+    private const int VersionCacheMaxEntries = 4096;
 
     public ToolhelpProcessScanner(ILogger<ToolhelpProcessScanner> logger)
     {
@@ -72,6 +77,50 @@ public sealed class ToolhelpProcessScanner : IProcessScanner
             // 进程已退出、跨位数（WoW64）或受保护进程无法读取模块，返回 null 即可
             return null;
         }
+    }
+
+    public Core.Engine.ProcessVersionInfo GetVersionInfo(int pid, string processName)
+    {
+        var key = (pid, processName);
+        lock (_versionCacheGate)
+        {
+            if (_versionCache.TryGetValue(key, out var entry) && DateTime.UtcNow - entry.SeenUtc < VersionCacheTtl)
+            {
+                return entry.Info;
+            }
+        }
+
+        string? path = null;
+        string? productName = null;
+        string? companyName = null;
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            path = process.MainModule?.FileName;
+            if (!string.IsNullOrEmpty(path))
+            {
+                var version = FileVersionInfo.GetVersionInfo(path);
+                productName = string.IsNullOrWhiteSpace(version.ProductName) ? null : version.ProductName;
+                companyName = string.IsNullOrWhiteSpace(version.CompanyName) ? null : version.CompanyName;
+            }
+        }
+        catch
+        {
+            // 解析失败按空信息处理
+        }
+
+        var info = new Core.Engine.ProcessVersionInfo(productName, companyName, path);
+        lock (_versionCacheGate)
+        {
+            if (_versionCache.Count >= VersionCacheMaxEntries)
+            {
+                _versionCache.Clear();
+            }
+
+            _versionCache[key] = (DateTime.UtcNow, info);
+        }
+
+        return info;
     }
 
     private static class NativeMethods
