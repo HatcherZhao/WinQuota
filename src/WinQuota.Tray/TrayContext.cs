@@ -5,19 +5,23 @@ using System.Runtime.InteropServices;
 namespace WinQuota.Tray;
 
 /// <summary>
-/// WinQuota 托盘程序（计划书第十七节）：
-/// 展示今日剩余时间、打开管理界面、锁定电脑、开机自启开关；
-/// 退出需要管理员 PIN，且退出托盘不会停止后台服务。
+/// WinQuota 桌面程序（托盘 + 主窗口）：
+/// 双击托盘或菜单打开 WebView2 主窗口（内嵌管理界面）；关闭窗口只是隐藏到托盘；
+/// 退出程序需要管理员 PIN，且退出后后台服务的限制继续工作。
+/// 再次启动 exe 会唤醒已运行的实例显示窗口（单实例）。
 /// </summary>
 internal sealed class TrayContext : ApplicationContext
 {
-    private static string ApiBase =>
+    public static string ApiBasePublic =>
         $"http://127.0.0.1:{Environment.GetEnvironmentVariable("WINQUOTA__APIPORT") ?? "58390"}";
 
     private readonly NotifyIcon _notifyIcon;
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 30_000 };
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
+    private readonly EventWaitHandle _showWindowEvent = new(
+        false, EventResetMode.AutoReset, Program.ShowWindowEventName);
 
+    private ManagementForm? _mainForm;
     private string _lastStatusSummary = "WinQuota：正在获取状态…";
 
     public TrayContext()
@@ -29,22 +33,53 @@ internal sealed class TrayContext : ApplicationContext
             Visible = true,
             ContextMenuStrip = BuildMenu(),
         };
-        _notifyIcon.DoubleClick += (_, _) => ShowStatusBalloon();
+        _notifyIcon.DoubleClick += (_, _) => ShowMainWindow();
+
+        // 其他进程（开始菜单快捷方式/二次启动）唤醒显示窗口
+        var listener = new Thread(WaitShowSignal) { IsBackground = true };
+        listener.Start();
 
         _timer.Tick += async (_, _) => await RefreshStatusAsync();
         _timer.Start();
         _ = RefreshStatusAsync();
+
+        // 启动即显示主窗口（开机自启场景除外）
+        if (!Environment.CommandLine.Contains("--minimized", StringComparison.OrdinalIgnoreCase))
+        {
+            ShowMainWindow();
+        }
+    }
+
+    private void WaitShowSignal()
+    {
+        while (true)
+        {
+            if (!_showWindowEvent.WaitOne())
+            {
+                continue;
+            }
+
+            try
+            {
+                _notifyIcon.Visible = true;
+                ShowMainWindowInternal();
+            }
+            catch
+            {
+                // 窗口线程已退出
+            }
+        }
     }
 
     private ContextMenuStrip BuildMenu()
     {
         var menu = new ContextMenuStrip();
 
-        var statusItem = new ToolStripMenuItem("今日状态") { Font = new Font(menu.Font, FontStyle.Bold) };
-        statusItem.Click += (_, _) => ShowStatusBalloon();
+        var manageItem = new ToolStripMenuItem("管理界面") { Font = new Font(menu.Font, FontStyle.Bold) };
+        manageItem.Click += (_, _) => ShowMainWindow();
 
-        var openItem = new ToolStripMenuItem("打开管理界面");
-        openItem.Click += (_, _) => OpenManagementUi();
+        var statusItem = new ToolStripMenuItem("今日状态");
+        statusItem.Click += (_, _) => ShowStatusBalloon();
 
         var lockItem = new ToolStripMenuItem("锁定电脑");
         lockItem.Click += (_, _) => LockWorkStation();
@@ -60,8 +95,8 @@ internal sealed class TrayContext : ApplicationContext
         var exitItem = new ToolStripMenuItem("退出（需要管理员 PIN）");
         exitItem.Click += async (_, _) => await ExitWithPinAsync();
 
+        menu.Items.Add(manageItem);
         menu.Items.Add(statusItem);
-        menu.Items.Add(openItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(lockItem);
         menu.Items.Add(autoStartItem);
@@ -70,11 +105,32 @@ internal sealed class TrayContext : ApplicationContext
         return menu;
     }
 
+    public void ShowMainWindow()
+    {
+        _notifyIcon.Visible = true;
+        ShowMainWindowInternal();
+    }
+
+    private void ShowMainWindowInternal()
+    {
+        if (_mainForm is null || _mainForm.IsDisposed)
+        {
+            _mainForm = new ManagementForm();
+            _mainForm.Show();
+        }
+        else
+        {
+            _mainForm.Show();
+            _mainForm.WindowState = FormWindowState.Normal;
+            _mainForm.Activate();
+        }
+    }
+
     private async Task RefreshStatusAsync()
     {
         try
         {
-            using var response = await _http.GetAsync($"{ApiBase}/api/status");
+            using var response = await _http.GetAsync($"{ApiBasePublic}/api/status");
             response.EnsureSuccessStatusCode();
             var payload = await response.Content.ReadFromJsonAsync<StatusPayload>();
             _lastStatusSummary = payload is { Rules.Count: > 0 }
@@ -100,13 +156,13 @@ internal sealed class TrayContext : ApplicationContext
         _notifyIcon.ShowBalloonTip(10_000, "WinQuota 今日状态", _lastStatusSummary, ToolTipIcon.Info);
     }
 
-    private static void OpenManagementUi()
+    public static void OpenUrlInBrowser(string url)
     {
         try
         {
             using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
-                FileName = ApiBase + "/",
+                FileName = url,
                 UseShellExecute = true,
             });
         }
@@ -120,7 +176,7 @@ internal sealed class TrayContext : ApplicationContext
     {
         try
         {
-            using var settingsResponse = await _http.GetAsync($"{ApiBase}/api/settings");
+            using var settingsResponse = await _http.GetAsync($"{ApiBasePublic}/api/settings");
             var settings = settingsResponse.IsSuccessStatusCode
                 ? await settingsResponse.Content.ReadFromJsonAsync<SettingsPayload>()
                 : null;
@@ -134,7 +190,7 @@ internal sealed class TrayContext : ApplicationContext
                 }
 
                 var verify = new { pin = dialog.Pin };
-                using var verifyResponse = await _http.PostAsJsonAsync($"{ApiBase}/api/pin/verify", verify);
+                using var verifyResponse = await _http.PostAsJsonAsync($"{ApiBasePublic}/api/pin/verify", verify);
                 var result = await verifyResponse.Content.ReadFromJsonAsync<VerifyResult>();
                 if (result?.Ok != true)
                 {
@@ -155,6 +211,7 @@ internal sealed class TrayContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         _timer.Stop();
+        _mainForm?.ReallyClose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         base.ExitThreadCore();
