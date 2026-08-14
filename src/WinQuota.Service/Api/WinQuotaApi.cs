@@ -215,6 +215,17 @@ public static class WinQuotaApi
                 }
 
                 string? productName = null;
+                long workingSetBytes;
+                try
+                {
+                    using var process = Process.GetProcessById(snapshot.Pid);
+                    workingSetBytes = process.WorkingSet64;
+                }
+                catch
+                {
+                    workingSetBytes = 0;
+                }
+
                 try
                 {
                     productName = FileVersionInfo.GetVersionInfo(path).ProductName;
@@ -224,12 +235,14 @@ public static class WinQuotaApi
                     // 受保护进程读不到版本信息，忽略
                 }
 
-                result[key] = new ProcessInfo(snapshot.Pid, snapshot.ProcessName, path, productName);
+                result[key] = new ProcessInfo(snapshot.Pid, snapshot.ProcessName, path, productName, workingSetBytes);
             }
 
             return Results.Json(new
             {
-                processes = result.Values.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+                // 按内存占用倒序：管理员通常要限制的就是占内存最多的游戏
+                processes = result.Values.OrderByDescending(p => p.WorkingSetBytes)
+                    .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList(),
             });
         });
 
@@ -295,7 +308,7 @@ public static class WinQuotaApi
 
     public sealed record AddAppRuleRequest(string Name, List<string>? ProcessNames, string? ExePath, string? ProductName, long Minutes, long? WeekendMinutes);
 
-    public sealed record ProcessInfo(int Pid, string Name, string Path, string? ProductName);
+    public sealed record ProcessInfo(int Pid, string Name, string Path, string? ProductName, long WorkingSetBytes);
 
     public sealed record AddComputerRuleRequest(string Name, long Minutes, long? WeekendMinutes);
 

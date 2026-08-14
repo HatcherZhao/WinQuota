@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { Message } from '@arco-design/web-vue'
 import { api, storedPin, storePin } from './api'
+import pkg from '../package.json'
 import Home from './pages/Home.vue'
 import Rules from './pages/Rules.vue'
 import AddApp from './pages/AddApp.vue'
@@ -56,7 +57,7 @@ onUnmounted(() => window.removeEventListener('winquota:pin-required', onPinRequi
       </nav>
       <div class="sider-footer">
         <button v-if="storedPin()" class="pin-btn" @click="clearPin">退出管理员模式</button>
-        <div class="ver">本地运行 · v0.3</div>
+        <div class="ver">本地运行 · v{{ pkg.version }}</div>
       </div>
     </a-layout-sider>
     <a-layout>

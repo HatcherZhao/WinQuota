@@ -41,6 +41,17 @@ VIProductVersion "0.4.0.0"
 
 Section "WinQuota 核心（后台服务 + 管理界面 + 托盘）" SecCore
   SectionIn RO
+  ; 覆盖安装时先结束托盘，避免文件被占用
+  nsExec::ExecToLog 'taskkill.exe /IM WinQuota.Tray.exe /F'
+  Sleep 1000
+
+  DetailPrint "正在停止旧服务..."
+  ; 必须先停服务释放文件占用，再复制新文件
+  nsExec::ExecToLog 'sc.exe stop WinQuota'
+  Sleep 2000
+  nsExec::ExecToLog 'sc.exe delete WinQuota'
+  Sleep 1500
+
   SetOutPath "$INSTDIR"
 
   File "..\publish\service\WinQuota.Service.exe"
@@ -49,11 +60,6 @@ Section "WinQuota 核心（后台服务 + 管理界面 + 托盘）" SecCore
   File /nonfatal "使用说明.txt"
 
   DetailPrint "正在安装 Windows 服务..."
-  ; 覆盖安装：先移除旧服务
-  nsExec::ExecToLog 'sc.exe stop WinQuota'
-  Sleep 1500
-  nsExec::ExecToLog 'sc.exe delete WinQuota'
-  Sleep 1500
 
   nsExec::ExecToLog 'sc.exe create WinQuota binPath= $\"$INSTDIR\WinQuota.Service.exe$\" start= auto obj= LocalSystem DisplayName= $\"WinQuota 防沉迷服务$\"'
   nsExec::ExecToLog 'sc.exe description WinQuota $\"WinQuota 防沉迷：进程监控、每日额度、时间限制。停止或删除本服务将导致限制失效。$\"'

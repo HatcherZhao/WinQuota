@@ -185,8 +185,8 @@ async function submitComputer() {
     <a-table
       :data="filteredProcesses"
       :loading="pickerLoading"
-      :pagination="{ pageSize: 12 }"
-      :scroll="{ y: 360 }"
+      :pagination="false"
+      :scroll="{ y: 420 }"
       row-key="pid"
       :row-selection="{ type: 'checkbox', showCheckedAll: true, selectedRowKeys: selectedKeys }"
       @selection-change="(keys: any) => (selectedKeys = keys.map(String))"
@@ -205,6 +205,9 @@ async function submitComputer() {
           </template>
         </a-table-column>
         <a-table-column title="进程名" data-index="name" :width="150" />
+        <a-table-column title="内存" :width="90" align="right">
+          <template #cell="{ record }">{{ (record.workingSetBytes / 1048576).toFixed(0) }} MB</template>
+        </a-table-column>
         <a-table-column title="产品名称" data-index="productName" :width="180" ellipsis tooltip>
           <template #cell="{ record }">{{ record.productName || '—' }}</template>
         </a-table-column>
