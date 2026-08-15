@@ -123,6 +123,9 @@ async function submitApp() {
       signer: signerText.value.trim() || undefined,
       minutes: appMinutes.value,
       weekendMinutes: appWeekendMinutes.value,
+      reminderMinutes: reminderMinutes.value.trim() || undefined,
+      maxExtensions: appMaxExtensions.value,
+      extensionMinutes: appExtensionMinutes.value,
     })
     Message.success(`已创建应用规则「${appName.value}」，下一个扫描周期生效`)
     appName.value = ''
@@ -139,12 +142,22 @@ const computerName = ref('电脑使用')
 const computerMinutes = ref(120)
 const computerWeekendMinutes = ref(240)
 
+// —— 提醒 / 延期（应用与整机共用，整机独立保存一份状态） ——
+const reminderMinutes = ref('30,15,5,1')
+const appMaxExtensions = ref(0)
+const appExtensionMinutes = ref(20)
+const computerMaxExtensions = ref(0)
+const computerExtensionMinutes = ref(20)
+
 async function submitComputer() {
   try {
     await api.addComputerRule({
       name: computerName.value.trim() || '电脑使用',
       minutes: computerMinutes.value,
       weekendMinutes: computerWeekendMinutes.value,
+      reminderMinutes: reminderMinutes.value.trim() || undefined,
+      maxExtensions: computerMaxExtensions.value,
+      extensionMinutes: computerExtensionMinutes.value,
     })
     Message.success('已创建整机规则，锁屏与空闲时间不计入')
   } catch (e: any) {
@@ -188,6 +201,17 @@ async function submitComputer() {
             <span>周末 <a-input-number v-model="appWeekendMinutes" :min="1" :max="1440" /></span>
           </a-space>
         </a-form-item>
+        <a-form-item label="提前提醒（分钟，逗号分隔，从大到小）">
+          <a-input v-model="reminderMinutes" placeholder="30,15,5,1" />
+          <template #extra>剩余时间每越过一个阈值弹一次提醒；填 0 或留空使用默认 30,15,5,1</template>
+        </a-form-item>
+        <a-form-item label="额度耗尽后允许延期">
+          <a-space size="large">
+            <span>最多次数 <a-input-number v-model="appMaxExtensions" :min="0" :max="20" /></span>
+            <span>每次分钟 <a-input-number v-model="appExtensionMinutes" :min="1" :max="240" /></span>
+          </a-space>
+          <template #extra>次数为 0 表示不允许；延期由使用者自行在首页操作，无需管理员 PIN，次数由服务端强制</template>
+        </a-form-item>
         <a-form-item>
           <a-button type="primary" @click="submitApp">创建应用规则</a-button>
         </a-form-item>
@@ -207,6 +231,16 @@ async function submitComputer() {
             <span>工作日 <a-input-number v-model="computerMinutes" :min="1" :max="1440" /></span>
             <span>周末 <a-input-number v-model="computerWeekendMinutes" :min="1" :max="1440" /></span>
           </a-space>
+        </a-form-item>
+        <a-form-item label="提前提醒（分钟，逗号分隔，从大到小）">
+          <a-input v-model="reminderMinutes" placeholder="30,15,5,1" />
+        </a-form-item>
+        <a-form-item label="额度耗尽后允许延期">
+          <a-space size="large">
+            <span>最多次数 <a-input-number v-model="computerMaxExtensions" :min="0" :max="20" /></span>
+            <span>每次分钟 <a-input-number v-model="computerExtensionMinutes" :min="1" :max="240" /></span>
+          </a-space>
+          <template #extra>整机规则耗尽后先锁屏，延期后可继续使用</template>
         </a-form-item>
         <a-form-item>
           <a-button type="primary" @click="submitComputer">创建整机规则</a-button>

@@ -58,6 +58,9 @@ public static class WinQuotaApi
                     running = entry.Rule.Enabled && running.Count > 0,
                     processes = running.Select(p => new { pid = p.Pid, name = p.ProcessName }),
                     iconPath = entry.Rule.Type == RuleType.COMPUTER ? null : live.GetIconPath(entry.Rule.Id),
+                    extensionsMax = entry.Rule.MaxExtensions,
+                    extensionsUsed = usage.ExtensionsUsed,
+                    extensionMinutes = entry.Rule.ExtensionMinutes,
                 };
             });
 
@@ -78,6 +81,9 @@ public static class WinQuotaApi
                 name = entry.Rule.Name,
                 type = entry.Rule.Type == RuleType.COMPUTER ? "computer" : "application",
                 enabled = entry.Rule.Enabled,
+                reminderMinutes = entry.Rule.ReminderMinutes,
+                maxExtensions = entry.Rule.MaxExtensions,
+                extensionMinutes = entry.Rule.ExtensionMinutes,
                 weekdayQuotaSeconds = new[]
                 {
                     entry.Rule.MondayLimitSeconds, entry.Rule.TuesdayLimitSeconds, entry.Rule.WednesdayLimitSeconds,
@@ -117,7 +123,10 @@ public static class WinQuotaApi
                 string.IsNullOrWhiteSpace(body.ExePath) ? null : body.ExePath.Trim(),
                 string.IsNullOrWhiteSpace(body.ProductName) ? null : body.ProductName.Trim(),
                 null,
-                string.IsNullOrWhiteSpace(body.Signer) ? null : body.Signer.Trim());
+                string.IsNullOrWhiteSpace(body.Signer) ? null : body.Signer.Trim(),
+                body.ReminderMinutes,
+                body.MaxExtensions ?? 0,
+                body.ExtensionMinutes ?? 20);
             return Results.Json(new { ruleId });
         });
 
@@ -133,7 +142,12 @@ public static class WinQuotaApi
                 return Results.BadRequest(new { error = "name、minutes 必填且合法" });
             }
 
-            var ruleId = db.AddComputerRule(body.Name.Trim(), BuildWeekdayLimits(body.Minutes, body.WeekendMinutes));
+            var ruleId = db.AddComputerRule(
+                body.Name.Trim(),
+                BuildWeekdayLimits(body.Minutes, body.WeekendMinutes),
+                body.ReminderMinutes,
+                body.MaxExtensions ?? 0,
+                body.ExtensionMinutes ?? 20);
             return Results.Json(new { ruleId });
         });
 
@@ -157,16 +171,29 @@ public static class WinQuotaApi
 
             var hasName = !string.IsNullOrWhiteSpace(body.Name);
             var hasProcesses = body.ProcessNames is { Count: > 0 };
-            if (!hasName && !hasProcesses)
+            var hasNewSettings = !string.IsNullOrWhiteSpace(body.ReminderMinutes) ||
+                                 body.MaxExtensions is not null ||
+                                 body.ExtensionMinutes is not null;
+            if (!hasName && !hasProcesses && !hasNewSettings)
             {
-                return Results.BadRequest(new { error = "至少提供 name 或 processNames" });
+                return Results.BadRequest(new { error = "至少提供 name、processNames 或提醒/延期配置" });
             }
 
             var processes = hasProcesses
                 ? body.ProcessNames!.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).ToArray()
                 : null;
-            var ok = db.UpdateRuleDetails(body.Id, body.Name, processes, body.ExePath, body.ProductName, body.Publisher, body.Signer);
+            var ok = db.UpdateRuleDetails(body.Id, body.Name, processes, body.ExePath, body.ProductName, body.Publisher, body.Signer,
+                body.ReminderMinutes, body.MaxExtensions, body.ExtensionMinutes);
             return ok ? Results.Ok() : Results.BadRequest(new { error = "规则不存在" });
+        });
+
+        // 用户自助延期：无需 PIN（次数与分钟数由服务端按规则配置强制）
+        app.MapPost("/api/extend", (ExtendRequest body, QuotaDatabase db) =>
+        {
+            var (granted, used, max, seconds) = db.ExtendUsage(body.RuleId, DateOnly.FromDateTime(DateTime.Now));
+            return granted
+                ? Results.Json(new { granted = true, extensionsUsed = used, maxExtensions = max, grantedSeconds = seconds })
+                : Results.Json(new { granted = false, extensionsUsed = used, maxExtensions = max, error = max <= 0 ? "该规则不允许延期" : "今日延期次数已用完" }, statusCode: 400);
         });
 
         app.MapPost("/api/rules/enable", (EnableRuleRequest body, QuotaDatabase db, HttpRequest request) =>
@@ -356,15 +383,17 @@ public static class WinQuotaApi
         return [weekday, weekday, weekday, weekday, weekday, weekend, weekend];
     }
 
-    public sealed record AddAppRuleRequest(string Name, List<string>? ProcessNames, string? ExePath, string? ProductName, string? Signer, long Minutes, long? WeekendMinutes);
+    public sealed record AddAppRuleRequest(string Name, List<string>? ProcessNames, string? ExePath, string? ProductName, string? Signer, long Minutes, long? WeekendMinutes, string? ReminderMinutes, int? MaxExtensions, int? ExtensionMinutes);
 
     public sealed record ProcessInfo(int Pid, string Name, string Path, string? ProductName, long WorkingSetBytes);
 
-    public sealed record AddComputerRuleRequest(string Name, long Minutes, long? WeekendMinutes);
+    public sealed record AddComputerRuleRequest(string Name, long Minutes, long? WeekendMinutes, string? ReminderMinutes, int? MaxExtensions, int? ExtensionMinutes);
 
     public sealed record UpdateRuleRequest(long Id, long Minutes, long? WeekendMinutes);
 
-    public sealed record EditRuleRequest(long Id, string? Name, List<string>? ProcessNames, string? ExePath, string? ProductName, string? Publisher, string? Signer);
+    public sealed record EditRuleRequest(long Id, string? Name, List<string>? ProcessNames, string? ExePath, string? ProductName, string? Publisher, string? Signer, string? ReminderMinutes, int? MaxExtensions, int? ExtensionMinutes);
+
+    public sealed record ExtendRequest(long RuleId);
 
     public sealed record EnableRuleRequest(long Id, bool Enabled);
 

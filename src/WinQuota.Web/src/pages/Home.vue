@@ -1,7 +1,21 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { Message } from '@arco-design/web-vue'
 import { api, type StatusPayload, type RuleStatus } from '../api'
 import { fmtDuration, computerStateText } from '../format'
+
+const extensionsLeft = (r: RuleStatus) => Math.max(0, r.extensionsMax - r.extensionsUsed)
+
+async function doExtend(r: RuleStatus) {
+  try {
+    await api.extend(r.id)
+    Message.success(`已延期 ${r.extensionMinutes} 分钟`)
+    refresh()
+  } catch (e: any) {
+    Message.error(e.message || '延期失败')
+    refresh()
+  }
+}
 
 const status = ref<StatusPayload | null>(null)
 const statDays = ref(7)
@@ -100,6 +114,11 @@ onUnmounted(() => {
             <span class="remaining">剩余 {{ fmtDuration(r.remainingSeconds) }}</span>
           </div>
           <a-progress :percent="percent(r)" :status="r.remainingSeconds === 0 ? 'warning' : undefined" />
+          <div v-if="r.remainingSeconds === 0 && extensionsLeft(r) > 0" class="extend-line">
+            <a-button type="outline" status="warning" size="small" @click="doExtend(r)">
+              延期 {{ r.extensionMinutes }} 分钟（今日还剩 {{ extensionsLeft(r) }} 次）
+            </a-button>
+          </div>
           <div v-if="r.processes.length" class="procs">
             进程：<a-tag v-for="p in r.processes" :key="p.pid" color="gray">{{ p.name }} ({{ p.pid }})</a-tag>
           </div>
@@ -146,6 +165,9 @@ onUnmounted(() => {
 .procs {
   margin-top: 8px;
   color: var(--color-text-2);
+}
+.extend-line {
+  margin-top: 10px;
 }
 .chart-block {
   margin-bottom: 20px;

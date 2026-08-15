@@ -17,7 +17,7 @@ namespace WinQuota.Service.Cli;
 /// </summary>
 public static class CommandLine
 {
-    private static readonly string[] Verbs = ["rules", "usage", "bonus", "pin", "debug"];
+    private static readonly string[] Verbs = ["rules", "usage", "bonus", "extend", "pin", "debug"];
 
     public static bool IsCliInvocation(IReadOnlyList<string> args) =>
         args.Count > 0 && Verbs.Contains(args[0], StringComparer.OrdinalIgnoreCase);
@@ -33,6 +33,7 @@ public static class CommandLine
                 "rules" => RunRules(args.Skip(1).ToList(), database),
                 "usage" => RunUsage(args.Skip(1).ToList(), database),
                 "bonus" => RunBonus(args.Skip(1).ToList(), database),
+                "extend" => RunExtend(args.Skip(1).ToList(), database),
                 "pin" => RunPin(args.Skip(1).ToList(), database),
                 "debug" => RunDebug(args.Skip(1).ToList(), database),
                 _ => Usage(),
@@ -162,7 +163,10 @@ public static class CommandLine
             paths?.FirstOrDefault(),
             products?.FirstOrDefault(),
             null,
-            signers?.FirstOrDefault());
+            signers?.FirstOrDefault(),
+            options.TryGetValue("remind", out var reminds) ? reminds.FirstOrDefault() : null,
+            (int)(TryGetLong(options, "allow-extend", out var ae) ? ae : 0),
+            (int)(TryGetLong(options, "extend-minutes", out var em) && em > 0 ? em : 20));
         Console.WriteLine($"已创建规则 #{ruleId}：{names[0]}，工作日 {weekdayMinutes} 分钟 / 周末 {weekendMinutes} 分钟");
         Console.WriteLine("（若后台服务已在运行，新规则将在下一个扫描周期生效）");
         return 0;
@@ -189,9 +193,34 @@ public static class CommandLine
             weekendMinutes * 60L, weekendMinutes * 60L,
         };
 
-        var ruleId = database.AddComputerRule(names[0], weekdayLimits);
+        var ruleId = database.AddComputerRule(
+            names[0],
+            weekdayLimits,
+            options.TryGetValue("remind", out var reminds) ? reminds.FirstOrDefault() : null,
+            (int)(TryGetLong(options, "allow-extend", out var ae) ? ae : 0),
+            (int)(TryGetLong(options, "extend-minutes", out var em) && em > 0 ? em : 20));
         Console.WriteLine($"已创建整机规则 #{ruleId}：{names[0]}，工作日 {weekdayMinutes} 分钟 / 周末 {weekendMinutes} 分钟");
         Console.WriteLine("（锁屏与空闲时间不计入，耗尽后自动锁定电脑）");
+        return 0;
+    }
+
+    private static int RunExtend(IReadOnlyList<string> args, QuotaDatabase database)
+    {
+        var options = ParseOptions(args);
+        if (!TryGetLong(options, "id", out var ruleId))
+        {
+            Console.Error.WriteLine("需要 --id <规则编号>");
+            return 1;
+        }
+
+        var (granted, used, max, seconds) = database.ExtendUsage(ruleId, DateOnly.FromDateTime(DateTime.Now));
+        if (!granted)
+        {
+            Console.Error.WriteLine(max <= 0 ? "该规则不允许延期" : $"今日延期次数已用完（{used}/{max}）");
+            return 1;
+        }
+
+        Console.WriteLine($"已延期 {seconds / 60} 分钟（今日已用 {used}/{max} 次）");
         return 0;
     }
 

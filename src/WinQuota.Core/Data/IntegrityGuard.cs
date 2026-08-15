@@ -171,7 +171,8 @@ public sealed class IntegrityGuard
         {
             command.CommandText = """
                 SELECT id, name, type, enabled, monday_limit, tuesday_limit, wednesday_limit, thursday_limit,
-                       friday_limit, saturday_limit, sunday_limit
+                       friday_limit, saturday_limit, sunday_limit,
+                       reminder_minutes, max_extensions, extension_minutes
                 FROM limit_rules ORDER BY id
                 """;
             using var reader = command.ExecuteReader();
@@ -181,9 +182,9 @@ public sealed class IntegrityGuard
                     .Append(Escape(reader.GetString(1))).Append('|')
                     .Append(reader.GetInt64(2)).Append('|')
                     .Append(reader.GetInt64(3));
-                for (var i = 4; i <= 10; i++)
+                for (var i = 4; i <= 13; i++)
                 {
-                    builder.Append('|').Append(reader.GetInt64(i));
+                    builder.Append('|').Append(i <= 10 ? reader.GetInt64(i) : (object)Escape(reader.GetString(i)));
                 }
 
                 builder.Append('\n');
@@ -213,7 +214,7 @@ public sealed class IntegrityGuard
 
         using (var command = connection.CreateCommand())
         {
-            command.CommandText = "SELECT id, rule_id, usage_date, used_seconds, bonus_seconds FROM daily_usage ORDER BY rule_id, usage_date, id";
+            command.CommandText = "SELECT id, rule_id, usage_date, used_seconds, bonus_seconds, extensions_used FROM daily_usage ORDER BY rule_id, usage_date, id";
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
@@ -221,7 +222,8 @@ public sealed class IntegrityGuard
                     .Append(reader.GetInt64(1)).Append('|')
                     .Append(Escape(reader.GetString(2))).Append('|')
                     .Append(reader.GetInt64(3)).Append('|')
-                    .Append(reader.GetInt64(4)).Append('\n');
+                    .Append(reader.GetInt64(4)).Append('|')
+                    .Append(reader.GetInt64(5)).Append('\n');
             }
         }
 

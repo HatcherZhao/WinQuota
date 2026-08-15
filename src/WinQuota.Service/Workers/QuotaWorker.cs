@@ -185,12 +185,18 @@ public sealed class QuotaWorker : BackgroundService
                 Flush(runtime);
                 var throttled = runtime.LastExhaustedNotifyUtc is { } last &&
                                 now - last < TimeSpan.FromSeconds(Math.Max(0, _options.ExhaustedNotifyThrottleSeconds));
+                var extensionsLeft = rule.MaxExtensions - usage.ExtensionsUsed;
                 if (!throttled)
                 {
                     runtime.LastExhaustedNotifyUtc = now;
                     var actionText = isComputerRule
                         ? (_options.LockOnComputerExhausted ? "电脑即将锁定。" : "（仅提醒模式）")
                         : "明天将自动恢复额度。";
+                    if (extensionsLeft > 0)
+                    {
+                        actionText = $"可在管理界面延期 {rule.ExtensionMinutes} 分钟（今日还剩 {extensionsLeft} 次）。";
+                    }
+
                     _notifier.Notify("WinQuota 防沉迷", $"{rule.Name} 今日使用时间已达到限制，{actionText}");
                 }
 
@@ -215,7 +221,8 @@ public sealed class QuotaWorker : BackgroundService
                 continue;
             }
 
-            foreach (var threshold in QuotaEngine.ThresholdsCrossed(remainingBefore, remainingAfter))
+            // 提醒阈值按规则配置（分钟 CSV → 秒），降序去重后使用
+            foreach (var threshold in QuotaEngine.ThresholdsCrossed(remainingBefore, remainingAfter, rule.ReminderThresholdsSeconds()))
             {
                 if (runtime.FiredReminders.Add(threshold))
                 {

@@ -16,6 +16,9 @@ const detailVisible = ref(false)
 const detailRule = ref<RuleDetail | null>(null)
 const editName = ref('')
 const editProcesses = ref('')
+const editReminder = ref('')
+const editMaxExtensions = ref(0)
+const editExtensionMinutes = ref(20)
 
 async function load() {
   loading.value = true
@@ -84,6 +87,9 @@ function openDetail(row: any) {
   detailRule.value = row
   editName.value = row.name
   editProcesses.value = row.apps.map((a: any) => a.processName).join('\n')
+  editReminder.value = row.reminderMinutes || '30,15,5,1'
+  editMaxExtensions.value = row.maxExtensions ?? 0
+  editExtensionMinutes.value = row.extensionMinutes ?? 20
   detailVisible.value = true
 }
 
@@ -94,7 +100,13 @@ async function saveDetail() {
     .map((s) => s.trim())
     .filter(Boolean)
   try {
-    const body: any = { id: detailRule.value.id, name: editName.value.trim() }
+    const body: any = {
+      id: detailRule.value.id,
+      name: editName.value.trim(),
+      reminderMinutes: editReminder.value.trim() || undefined,
+      maxExtensions: editMaxExtensions.value,
+      extensionMinutes: editExtensionMinutes.value,
+    }
     if (detailRule.value.type === 'application') {
       if (processes.length === 0) {
         Message.warning('应用规则至少需要一个进程名')
@@ -180,6 +192,16 @@ onMounted(load)
       </a-form-item>
       <a-form-item v-if="detailRule?.type === 'application'" label="匹配进程（每行一个，保存后原位替换；额度与今日已用时间保留）">
         <a-textarea v-model="editProcesses" :auto-size="{ minRows: 3, maxRows: 8 }" placeholder="foxwq.exe&#10;foxwqclient.exe" />
+      </a-form-item>
+      <a-form-item label="提前提醒（分钟，逗号分隔）">
+        <a-input v-model="editReminder" placeholder="30,15,5,1" />
+      </a-form-item>
+      <a-form-item label="耗尽后允许延期">
+        <a-space size="large">
+          <span>最多次数 <a-input-number v-model="editMaxExtensions" :min="0" :max="20" /></span>
+          <span>每次分钟 <a-input-number v-model="editExtensionMinutes" :min="1" :max="240" /></span>
+        </a-space>
+        <template #extra>0 = 不允许；使用者可在首页自行延期，无需 PIN</template>
       </a-form-item>
     </a-form>
   </a-modal>

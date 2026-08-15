@@ -55,6 +55,9 @@ export interface RuleStatus {
   running: boolean
   processes: { pid: number; name: string }[]
   iconPath: string | null
+  extensionsMax: number
+  extensionsUsed: number
+  extensionMinutes: number
 }
 
 export interface StatusPayload {
@@ -69,6 +72,9 @@ export interface RuleDetail {
   name: string
   type: 'application' | 'computer'
   enabled: boolean
+  reminderMinutes: string
+  maxExtensions: number
+  extensionMinutes: number
   weekdayQuotaSeconds: number[]
   apps: {
     id: number
@@ -99,8 +105,11 @@ export const api = {
     signer?: string
     minutes: number
     weekendMinutes?: number
+    reminderMinutes?: string
+    maxExtensions?: number
+    extensionMinutes?: number
   }) => request('/api/rules/app', { method: 'POST', body: JSON.stringify(body) }),
-  addComputerRule: (body: { name: string; minutes: number; weekendMinutes?: number }) =>
+  addComputerRule: (body: { name: string; minutes: number; weekendMinutes?: number; reminderMinutes?: string; maxExtensions?: number; extensionMinutes?: number }) =>
     request('/api/rules/computer', { method: 'POST', body: JSON.stringify(body) }),
   updateRule: (body: { id: number; minutes: number; weekendMinutes?: number }) =>
     request('/api/rules/update', { method: 'POST', body: JSON.stringify(body) }),
@@ -112,7 +121,13 @@ export const api = {
     productName?: string
     publisher?: string
     signer?: string
+    reminderMinutes?: string
+    maxExtensions?: number
+    extensionMinutes?: number
   }) => request('/api/rules/edit', { method: 'POST', body: JSON.stringify(body) }),
+  // 用户自助延期（免 PIN，次数由服务端强制）
+  extend: (ruleId: number) =>
+    request('/api/extend', { method: 'POST', body: JSON.stringify({ ruleId }) }),
   enableRule: (id: number, enabled: boolean) =>
     request('/api/rules/enable', { method: 'POST', body: JSON.stringify({ id, enabled }) }),
   deleteRule: (id: number) =>

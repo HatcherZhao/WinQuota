@@ -91,6 +91,9 @@ public sealed class QuotaDatabase
                     friday_limit    INTEGER NOT NULL DEFAULT 0,
                     saturday_limit  INTEGER NOT NULL DEFAULT 0,
                     sunday_limit    INTEGER NOT NULL DEFAULT 0,
+                    reminder_minutes TEXT   NOT NULL DEFAULT '30,15,5,1',
+                    max_extensions  INTEGER NOT NULL DEFAULT 0,
+                    extension_minutes INTEGER NOT NULL DEFAULT 20,
                     created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
                 );
 
@@ -111,6 +114,7 @@ public sealed class QuotaDatabase
                     usage_date    TEXT    NOT NULL,
                     used_seconds  INTEGER NOT NULL DEFAULT 0,
                     bonus_seconds INTEGER NOT NULL DEFAULT 0,
+                    extensions_used INTEGER NOT NULL DEFAULT 0,
                     UNIQUE (rule_id, usage_date)
                 );
 
@@ -123,14 +127,43 @@ public sealed class QuotaDatabase
                 """;
             command.ExecuteNonQuery();
 
-            // 旧库升级迁移：0.5.x 及之前没有 signer 列（签名者匹配，第四阶段）。
-            var migrated = EnsureSignerColumn(connection);
+            // 旧库升级迁移：0.5.x 及之前没有 signer 列（签名者匹配，第四阶段）；
+            // 0.7.x 及之前没有提醒阈值 / 延期配置列（v0.8.0）。
+            var migrated = EnsureSignerColumn(connection) | EnsureV08Columns(connection);
             // 全新库 / 旧版本升级 / 完整性防护首次启用：写入基线签名。
             if (migrated || _integrity.GetStoredHmac(connection) is null)
             {
                 _integrity.WriteBaseline(connection);
             }
         }
+    }
+
+    /// <summary>v0.8.0 迁移：提醒阈值与延期配置列、用量表的延期计数列。</summary>
+    private static bool EnsureV08Columns(SqliteConnection connection)
+    {
+        var migrated = false;
+        migrated |= AddColumnIfMissing(connection, "limit_rules", "reminder_minutes", "TEXT NOT NULL DEFAULT '30,15,5,1'");
+        migrated |= AddColumnIfMissing(connection, "limit_rules", "max_extensions", "INTEGER NOT NULL DEFAULT 0");
+        migrated |= AddColumnIfMissing(connection, "limit_rules", "extension_minutes", "INTEGER NOT NULL DEFAULT 20");
+        migrated |= AddColumnIfMissing(connection, "daily_usage", "extensions_used", "INTEGER NOT NULL DEFAULT 0");
+        return migrated;
+    }
+
+    private static bool AddColumnIfMissing(SqliteConnection connection, string table, string column, string definition)
+    {
+        using (var check = connection.CreateCommand())
+        {
+            check.CommandText = $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'";
+            if (Convert.ToInt64(check.ExecuteScalar(), CultureInfo.InvariantCulture) > 0)
+            {
+                return false;
+            }
+        }
+
+        using var alter = connection.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {definition}";
+        alter.ExecuteNonQuery();
+        return true;
     }
 
     private static bool EnsureSignerColumn(SqliteConnection connection)
@@ -163,7 +196,10 @@ public sealed class QuotaDatabase
         string? exePath = null,
         string? productName = null,
         string? publisher = null,
-        string? signer = null)
+        string? signer = null,
+        string? reminderMinutes = null,
+        int maxExtensions = 0,
+        int extensionMinutes = 20)
     {
         if (processNames.Count == 0)
         {
@@ -175,7 +211,7 @@ public sealed class QuotaDatabase
             using var connection = Open();
             using var transaction = connection.BeginTransaction();
 
-            var ruleId = InsertLimitRule(connection, name, RuleType.APPLICATION, weekdayLimitsMonToSun);
+            var ruleId = InsertLimitRule(connection, name, RuleType.APPLICATION, weekdayLimitsMonToSun, reminderMinutes, maxExtensions, extensionMinutes);
 
             foreach (var processName in processNames)
             {
@@ -202,13 +238,14 @@ public sealed class QuotaDatabase
     }
 
     /// <summary>创建一条整机使用时长限制规则。</summary>
-    public long AddComputerRule(string name, IReadOnlyList<long> weekdayLimitsMonToSun)
+    public long AddComputerRule(string name, IReadOnlyList<long> weekdayLimitsMonToSun,
+        string? reminderMinutes = null, int maxExtensions = 0, int extensionMinutes = 20)
     {
         lock (_gate)
         {
             using var connection = Open();
             using var transaction = connection.BeginTransaction();
-            var ruleId = InsertLimitRule(connection, name, RuleType.COMPUTER, weekdayLimitsMonToSun);
+            var ruleId = InsertLimitRule(connection, name, RuleType.COMPUTER, weekdayLimitsMonToSun, reminderMinutes, maxExtensions, extensionMinutes);
             _integrity.SignAfterWrite(connection);
             transaction.Commit();
             _integrity.NotifyCommitted();
@@ -216,7 +253,8 @@ public sealed class QuotaDatabase
         }
     }
 
-    private static long InsertLimitRule(SqliteConnection connection, string name, RuleType type, IReadOnlyList<long> weekdayLimitsMonToSun)
+    private static long InsertLimitRule(SqliteConnection connection, string name, RuleType type, IReadOnlyList<long> weekdayLimitsMonToSun,
+        string? reminderMinutes, int maxExtensions, int extensionMinutes)
     {
         if (weekdayLimitsMonToSun.Count != 7)
         {
@@ -226,12 +264,17 @@ public sealed class QuotaDatabase
         using var command = connection.CreateCommand();
         command.CommandText = """
             INSERT INTO limit_rules (name, type, enabled, monday_limit, tuesday_limit, wednesday_limit,
-                                     thursday_limit, friday_limit, saturday_limit, sunday_limit)
-            VALUES (@name, @type, 1, @mon, @tue, @wed, @thu, @fri, @sat, @sun);
+                                     thursday_limit, friday_limit, saturday_limit, sunday_limit,
+                                     reminder_minutes, max_extensions, extension_minutes)
+            VALUES (@name, @type, 1, @mon, @tue, @wed, @thu, @fri, @sat, @sun,
+                    @remind, @maxExt, @extMin);
             SELECT last_insert_rowid();
             """;
         command.Parameters.AddWithValue("@name", name);
         command.Parameters.AddWithValue("@type", (int)type);
+        command.Parameters.AddWithValue("@remind", string.IsNullOrWhiteSpace(reminderMinutes) ? "30,15,5,1" : reminderMinutes.Trim());
+        command.Parameters.AddWithValue("@maxExt", Math.Max(0, maxExtensions));
+        command.Parameters.AddWithValue("@extMin", Math.Max(1, extensionMinutes));
         AddWeekdayParams(command, weekdayLimitsMonToSun);
         return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
     }
@@ -245,7 +288,7 @@ public sealed class QuotaDatabase
             var rules = new List<(LimitRule, IReadOnlyList<ApplicationRule>)>();
             using (var command = connection.CreateCommand())
             {
-                command.CommandText = "SELECT id, name, type, enabled, monday_limit, tuesday_limit, wednesday_limit, thursday_limit, friday_limit, saturday_limit, sunday_limit FROM limit_rules ORDER BY id";
+                command.CommandText = "SELECT id, name, type, enabled, monday_limit, tuesday_limit, wednesday_limit, thursday_limit, friday_limit, saturday_limit, sunday_limit, reminder_minutes, max_extensions, extension_minutes FROM limit_rules ORDER BY id";
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
@@ -262,6 +305,9 @@ public sealed class QuotaDatabase
                         FridayLimitSeconds = reader.GetInt64(8),
                         SaturdayLimitSeconds = reader.GetInt64(9),
                         SundayLimitSeconds = reader.GetInt64(10),
+                        ReminderMinutes = reader.IsDBNull(11) ? "30,15,5,1" : reader.GetString(11),
+                        MaxExtensions = (int)reader.GetInt64(12),
+                        ExtensionMinutes = (int)reader.GetInt64(13),
                     };
                     if (enabledFilter is { } filter && rule.Enabled != filter)
                     {
@@ -314,7 +360,10 @@ public sealed class QuotaDatabase
         string? exePath = null,
         string? productName = null,
         string? publisher = null,
-        string? signer = null)
+        string? signer = null,
+        string? reminderMinutes = null,
+        int? maxExtensions = null,
+        int? extensionMinutes = null)
     {
         lock (_gate)
         {
@@ -322,11 +371,38 @@ public sealed class QuotaDatabase
             using var transaction = connection.BeginTransaction();
 
             long changed = 0;
-            if (!string.IsNullOrWhiteSpace(name))
+            if (!string.IsNullOrWhiteSpace(name) ||
+                !string.IsNullOrWhiteSpace(reminderMinutes) ||
+                maxExtensions is not null ||
+                extensionMinutes is not null)
             {
+                var sets = new List<string>();
                 using var command = connection.CreateCommand();
-                command.CommandText = "UPDATE limit_rules SET name = @name WHERE id = @id";
-                command.Parameters.AddWithValue("@name", name.Trim());
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    sets.Add("name = @name");
+                    command.Parameters.AddWithValue("@name", name.Trim());
+                }
+
+                if (!string.IsNullOrWhiteSpace(reminderMinutes))
+                {
+                    sets.Add("reminder_minutes = @remind");
+                    command.Parameters.AddWithValue("@remind", reminderMinutes.Trim());
+                }
+
+                if (maxExtensions is not null)
+                {
+                    sets.Add("max_extensions = @maxExt");
+                    command.Parameters.AddWithValue("@maxExt", Math.Max(0, maxExtensions.Value));
+                }
+
+                if (extensionMinutes is not null)
+                {
+                    sets.Add("extension_minutes = @extMin");
+                    command.Parameters.AddWithValue("@extMin", Math.Max(1, extensionMinutes.Value));
+                }
+
+                command.CommandText = $"UPDATE limit_rules SET {string.Join(", ", sets)} WHERE id = @id";
                 command.Parameters.AddWithValue("@id", ruleId);
                 changed = command.ExecuteNonQuery();
             }
@@ -493,7 +569,7 @@ public sealed class QuotaDatabase
         var dateText = FormatDate(date);
         using (var query = connection.CreateCommand())
         {
-            query.CommandText = "SELECT id, used_seconds, bonus_seconds FROM daily_usage WHERE rule_id = @ruleId AND usage_date = @date";
+            query.CommandText = "SELECT id, used_seconds, bonus_seconds, extensions_used FROM daily_usage WHERE rule_id = @ruleId AND usage_date = @date";
             query.Parameters.AddWithValue("@ruleId", ruleId);
             query.Parameters.AddWithValue("@date", dateText);
             using var reader = query.ExecuteReader();
@@ -507,6 +583,7 @@ public sealed class QuotaDatabase
                     UsageDate = date,
                     UsedSeconds = reader.GetInt64(1),
                     BonusSeconds = reader.GetInt64(2),
+                    ExtensionsUsed = reader.GetInt64(3),
                 };
             }
         }
@@ -523,6 +600,65 @@ public sealed class QuotaDatabase
             var id = Convert.ToInt64(insert.ExecuteScalar(), CultureInfo.InvariantCulture);
             created = true;
             return new DailyUsage { Id = id, RuleId = ruleId, UsageDate = date, UsedSeconds = 0, BonusSeconds = 0 };
+        }
+    }
+
+    /// <summary>
+    /// 用户自助延期（无需管理员 PIN）：把规则的 extension_minutes 计入当天 bonus 并累计次数。
+    /// 次数上限由本方法在事务内强制（规则 max_extensions 与当天已用次数比较），超限返回 false。
+    /// </summary>
+    public (bool Granted, long ExtensionsUsed, long MaxExtensions, long ExtensionSeconds) ExtendUsage(long ruleId, DateOnly date)
+    {
+        lock (_gate)
+        {
+            using var connection = Open();
+            using var transaction = connection.BeginTransaction();
+
+            long maxExtensions, extensionMinutes;
+            using (var rule = connection.CreateCommand())
+            {
+                rule.CommandText = "SELECT max_extensions, extension_minutes FROM limit_rules WHERE id = @id";
+                rule.Parameters.AddWithValue("@id", ruleId);
+                using var reader = rule.ExecuteReader();
+                if (!reader.Read())
+                {
+                    return (false, 0, 0, 0); // 规则不存在
+                }
+
+                maxExtensions = reader.GetInt64(0);
+                extensionMinutes = reader.GetInt64(1);
+            }
+
+            var usage = GetOrCreateUsage(connection, ruleId, date, out var created);
+            if (usage.ExtensionsUsed >= maxExtensions)
+            {
+                if (created)
+                {
+                    _integrity.SignAfterWrite(connection);
+                    transaction.Commit();
+                    _integrity.NotifyCommitted();
+                }
+
+                return (false, usage.ExtensionsUsed, maxExtensions, 0);
+            }
+
+            using (var update = connection.CreateCommand())
+            {
+                update.CommandText = """
+                    UPDATE daily_usage
+                    SET bonus_seconds = bonus_seconds + @minutes, extensions_used = extensions_used + 1
+                    WHERE rule_id = @ruleId AND usage_date = @date
+                    """;
+                update.Parameters.AddWithValue("@minutes", extensionMinutes * 60);
+                update.Parameters.AddWithValue("@ruleId", ruleId);
+                update.Parameters.AddWithValue("@date", FormatDate(date));
+                update.ExecuteNonQuery();
+            }
+
+            _integrity.SignAfterWrite(connection);
+            transaction.Commit();
+            _integrity.NotifyCommitted();
+            return (true, usage.ExtensionsUsed + 1, maxExtensions, extensionMinutes * 60);
         }
     }
 
@@ -578,7 +714,7 @@ public sealed class QuotaDatabase
         {
             using var connection = Open();
             using var command = connection.CreateCommand();
-            command.CommandText = "SELECT id, rule_id, usage_date, used_seconds, bonus_seconds FROM daily_usage WHERE usage_date = @date ORDER BY rule_id";
+            command.CommandText = "SELECT id, rule_id, usage_date, used_seconds, bonus_seconds, extensions_used FROM daily_usage WHERE usage_date = @date ORDER BY rule_id";
             command.Parameters.AddWithValue("@date", FormatDate(date));
             using var reader = command.ExecuteReader();
             var list = new List<DailyUsage>();
@@ -591,6 +727,7 @@ public sealed class QuotaDatabase
                     UsageDate = ParseDate(reader.GetString(2)),
                     UsedSeconds = reader.GetInt64(3),
                     BonusSeconds = reader.GetInt64(4),
+                    ExtensionsUsed = reader.GetInt64(5),
                 });
             }
 
@@ -604,7 +741,7 @@ public sealed class QuotaDatabase
         {
             using var connection = Open();
             using var command = connection.CreateCommand();
-            command.CommandText = "SELECT id, rule_id, usage_date, used_seconds, bonus_seconds FROM daily_usage WHERE usage_date BETWEEN @from AND @to ORDER BY usage_date, rule_id";
+            command.CommandText = "SELECT id, rule_id, usage_date, used_seconds, bonus_seconds, extensions_used FROM daily_usage WHERE usage_date BETWEEN @from AND @to ORDER BY usage_date, rule_id";
             command.Parameters.AddWithValue("@from", FormatDate(fromDate));
             command.Parameters.AddWithValue("@to", FormatDate(toDate));
             using var reader = command.ExecuteReader();
@@ -618,6 +755,7 @@ public sealed class QuotaDatabase
                     UsageDate = ParseDate(reader.GetString(2)),
                     UsedSeconds = reader.GetInt64(3),
                     BonusSeconds = reader.GetInt64(4),
+                    ExtensionsUsed = reader.GetInt64(5),
                 });
             }
 
