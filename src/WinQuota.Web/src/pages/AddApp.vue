@@ -20,7 +20,7 @@ const pickerVisible = ref(false)
 const pickerLoading = ref(false)
 const pickerSearch = ref('')
 const processes = ref<any[]>([])
-const selectedKeys = ref<string[]>([])
+const selectedKeys = ref<(string | number)[]>([])
 
 async function openPicker() {
   pickerVisible.value = true
@@ -48,7 +48,7 @@ const filteredProcesses = computed(() => {
 })
 
 function confirmPicker() {
-  const selected = processes.value.filter((p: any) => selectedKeys.value.includes(String(p.pid)))
+  const selected = processes.value.filter((p: any) => selectedKeys.value.includes(p.pid))
   if (selected.length === 0) {
     Message.warning('请先选择进程')
     return
@@ -227,7 +227,7 @@ async function submitComputer() {
       :scroll="{ y: 420 }"
       row-key="pid"
       :row-selection="{ type: 'checkbox', showCheckedAll: true, selectedRowKeys: selectedKeys }"
-      @selection-change="(keys: any) => (selectedKeys = keys.map(String))"
+      @selection-change="(keys: any) => (selectedKeys = keys)"
     >
       <template #columns>
         <a-table-column title="" :width="44">

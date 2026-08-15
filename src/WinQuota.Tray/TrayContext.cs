@@ -28,7 +28,7 @@ internal sealed class TrayContext : ApplicationContext
     {
         _notifyIcon = new NotifyIcon
         {
-            Icon = CreateIcon(),
+            Icon = AppIcon.Create(),
             Text = "WinQuota 防沉迷",
             Visible = true,
             ContextMenuStrip = BuildMenu(),
@@ -230,23 +230,6 @@ internal sealed class TrayContext : ApplicationContext
     private static string Truncate(string text, int maxLength) =>
         text.Length <= maxLength ? text : text[..(maxLength - 1)] + "…";
 
-    /// <summary>运行时绘制一个简单的盾形“W”图标，避免携带二进制资源。</summary>
-    private static Icon CreateIcon()
-    {
-        using var bitmap = new Bitmap(32, 32);
-        using (var graphics = Graphics.FromImage(bitmap))
-        {
-            graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using var background = new SolidBrush(Color.FromArgb(28, 108, 219));
-            graphics.FillEllipse(background, 1, 1, 30, 30);
-            using var foreground = new SolidBrush(Color.White);
-            using var font = new Font("Segoe UI", 15f, FontStyle.Bold);
-            var size = graphics.MeasureString("W", font);
-            graphics.DrawString("W", font, foreground, (32 - size.Width) / 2, (32 - size.Height) / 2);
-        }
-
-        return Icon.FromHandle(bitmap.GetHicon());
-    }
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

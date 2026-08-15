@@ -20,6 +20,7 @@ internal sealed class ManagementForm : Form
         Size = new Size(1220, 800);
         MinimumSize = new Size(860, 600);
         ShowInTaskbar = true;
+        Icon = AppIcon.Create();
 
         // 用户点 X 只是隐藏到托盘；真正的退出走托盘菜单（PIN 保护）
         FormClosing += (_, e) =>

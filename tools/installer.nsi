@@ -3,6 +3,7 @@
 ; 版本号在此处与 README 同步修改
 
 !include "MUI2.nsh"
+!include "LogicLib.nsh"
 
 !define VERSION "0.7.1"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WinQuota"
@@ -62,6 +63,14 @@ Section "WinQuota 核心（后台服务 + 管理界面 + 托盘）" SecCore
   DetailPrint "正在安装 Windows 服务..."
 
   nsExec::ExecToLog 'sc.exe create WinQuota binPath= $\"$INSTDIR\WinQuota.Service.exe$\" start= auto obj= LocalSystem DisplayName= $\"WinQuota 防沉迷服务$\"'
+  ; 部分环境下 sc.exe create 会被安全软件干扰失败（RPC 1783），
+  ; 检测失败则回退 PowerShell New-Service（直接调用 CreateServiceW API）
+  nsExec::ExecToLog 'sc.exe query WinQuota'
+  Pop $R0
+  ${If} $R0 != 0
+    DetailPrint "sc.exe create 失败（$R0），回退 New-Service..."
+    nsExec::ExecToLog "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $\"try { New-Service -Name WinQuota -DisplayName 'WinQuota 防沉迷服务' -Description 'WinQuota 防沉迷：停止或删除本服务将导致限制失效。' -BinaryPathName '$INSTDIR\WinQuota.Service.exe' -StartupType Automatic } catch { $$_.Exception.Message | Out-File -Encoding utf8 '$INSTDIR\install-fallback-error.log' }$\""
+  ${EndIf}
   nsExec::ExecToLog 'sc.exe description WinQuota $\"WinQuota 防沉迷：进程监控、每日额度、时间限制。停止或删除本服务将导致限制失效。$\"'
   ; 故障自恢复：异常退出/被强杀后由 SCM 自动重启
   nsExec::ExecToLog 'sc.exe failure WinQuota reset= 86400 actions= restart/60000/restart/60000/restart/60000'
