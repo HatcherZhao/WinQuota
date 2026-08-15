@@ -183,9 +183,35 @@ public sealed class QuotaWorker : BackgroundService
             if (remainingAfter <= 0)
             {
                 Flush(runtime);
+                var extensionsLeft = rule.MaxExtensions - usage.ExtensionsUsed;
+
+                // 宽限期：还有延期次数时不立即终止/锁定，给用户时间在管理界面点延期；
+                // 超时未延期或次数用尽才执行限制。
+                var graceSeconds = Math.Max(30, _options.ExtensionGraceSeconds);
+                if (extensionsLeft > 0 && (runtime.GraceDeadlineUtc is null || now < runtime.GraceDeadlineUtc))
+                {
+                    if (runtime.GraceDeadlineUtc is null)
+                    {
+                        runtime.GraceDeadlineUtc = now.AddSeconds(graceSeconds);
+                        runtime.LastExhaustedNotifyUtc = now;
+                        var actionText = isComputerRule ? "电脑将锁定" : "程序将关闭";
+                        _notifier.Notify("WinQuota 防沉迷",
+                            $"{rule.Name} 今日额度已用完：可延期 {rule.ExtensionMinutes} 分钟（剩 {extensionsLeft} 次），{graceSeconds} 秒内未延期{actionText}。");
+                        _logger.LogWarning("规则 {Rule} 额度耗尽，进入 {Grace}s 延期宽限期（剩 {Left} 次）",
+                            rule.Name, graceSeconds, extensionsLeft);
+                    }
+                    else if (now - runtime.LastExhaustedNotifyUtc > TimeSpan.FromSeconds(30))
+                    {
+                        runtime.LastExhaustedNotifyUtc = now;
+                        _notifier.Notify("WinQuota 防沉迷",
+                            $"{rule.Name} 即将{(isComputerRule ? "锁定" : "关闭")}，请尽快延期（剩 {extensionsLeft} 次）。");
+                    }
+
+                    continue;
+                }
+
                 var throttled = runtime.LastExhaustedNotifyUtc is { } last &&
                                 now - last < TimeSpan.FromSeconds(Math.Max(0, _options.ExhaustedNotifyThrottleSeconds));
-                var extensionsLeft = rule.MaxExtensions - usage.ExtensionsUsed;
                 if (!throttled)
                 {
                     runtime.LastExhaustedNotifyUtc = now;
@@ -194,7 +220,7 @@ public sealed class QuotaWorker : BackgroundService
                         : "明天将自动恢复额度。";
                     if (extensionsLeft > 0)
                     {
-                        actionText = $"可在管理界面延期 {rule.ExtensionMinutes} 分钟（今日还剩 {extensionsLeft} 次）。";
+                        actionText = $"延期宽限期已过。明天将自动恢复额度。";
                     }
 
                     _notifier.Notify("WinQuota 防沉迷", $"{rule.Name} 今日使用时间已达到限制，{actionText}");
@@ -222,6 +248,8 @@ public sealed class QuotaWorker : BackgroundService
             }
 
             // 提醒阈值按规则配置（分钟 CSV → 秒），降序去重后使用
+            // （走到这里说明剩余 > 0；若之前处于延期宽限期，此刻已恢复，清除宽限标记）
+            runtime.GraceDeadlineUtc = null;
             foreach (var threshold in QuotaEngine.ThresholdsCrossed(remainingBefore, remainingAfter, rule.ReminderThresholdsSeconds()))
             {
                 if (runtime.FiredReminders.Add(threshold))
@@ -448,6 +476,9 @@ public sealed class QuotaWorker : BackgroundService
         public HashSet<int> FiredReminders { get; } = [];
         public DateTime LastFlushUtc { get; set; } = DateTime.MinValue;
         public DateTime? LastExhaustedNotifyUtc { get; set; }
+
+        /// <summary>延期宽限期截止时刻（null = 不在宽限期）；剩余 &gt; 0 时清空。</summary>
+        public DateTime? GraceDeadlineUtc { get; set; }
 
         // 用量单调保护（第四阶段防绕过）：当天见过的数据库侧最大已用 / 奖励，以及最近一次读回的已用值
         public long KnownDbUsed { get; set; }
