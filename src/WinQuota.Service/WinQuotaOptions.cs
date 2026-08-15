@@ -20,7 +20,7 @@ public sealed class WinQuotaOptions
     public int IdleThresholdSeconds { get; set; } = 300;
 
     /// <summary>耗尽但有剩余延期次数时的宽限时长（秒）：宽限期内不杀进程/不锁屏，等用户点延期；超时未延期才执行限制。</summary>
-    public int ExtensionGraceSeconds { get; set; } = 120;
+    public int ExtensionGraceSeconds { get; set; } = 300;
 
     /// <summary>整机额度耗尽后的动作：Lock（锁定工作站，默认）或 NotifyOnly（仅提醒）。</summary>
     public string ComputerExhaustedAction { get; set; } = "Lock";

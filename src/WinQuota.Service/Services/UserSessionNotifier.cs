@@ -40,6 +40,23 @@ public sealed class UserSessionNotifier : INotifier
         TryShowMessageDialog(title, message);
     }
 
+    public void NotifyCritical(string title, string message)
+    {
+        _logger.LogInformation("关键通知：{Title} - {Message}", title, message);
+        // Toast 照发（非全屏场景体验好）
+        try
+        {
+            TryShowToast(title, message);
+        }
+        catch
+        {
+            // Toast 失败不影响 msg 弹窗
+        }
+
+        // msg.exe 置顶消息框：全屏游戏压制 Toast 时仍可见
+        TryShowMessageDialog(title, message);
+    }
+
     private bool TryShowToast(string title, string message)
     {
         var sessionId = WtsSession.FindActiveSessionId();
