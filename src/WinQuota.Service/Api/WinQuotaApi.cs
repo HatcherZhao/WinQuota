@@ -48,6 +48,7 @@ public static class WinQuotaApi
                     remainingSeconds = QuotaEngine.RemainingSeconds(QuotaEngine.TotalQuotaSeconds(quota, usage.BonusSeconds), used),
                     running = entry.Rule.Enabled && running.Count > 0,
                     processes = running.Select(p => new { pid = p.Pid, name = p.ProcessName }),
+                    iconPath = entry.Rule.Type == RuleType.COMPUTER ? null : live.GetIconPath(entry.Rule.Id),
                 };
             });
 
@@ -135,6 +136,27 @@ public static class WinQuotaApi
             }
 
             var ok = db.UpdateRuleQuotas(body.Id, BuildWeekdayLimits(body.Minutes, body.WeekendMinutes));
+            return ok ? Results.Ok() : Results.BadRequest(new { error = "规则不存在" });
+        });
+
+        app.MapPost("/api/rules/edit", (EditRuleRequest body, QuotaDatabase db, HttpRequest request) =>
+        {
+            if (!PinAuthorized(request, db))
+            {
+                return Results.Json(new { error = "PIN required or incorrect" }, statusCode: 403);
+            }
+
+            var hasName = !string.IsNullOrWhiteSpace(body.Name);
+            var hasProcesses = body.ProcessNames is { Count: > 0 };
+            if (!hasName && !hasProcesses)
+            {
+                return Results.BadRequest(new { error = "至少提供 name 或 processNames" });
+            }
+
+            var processes = hasProcesses
+                ? body.ProcessNames!.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).ToArray()
+                : null;
+            var ok = db.UpdateRuleDetails(body.Id, body.Name, processes, body.ExePath, body.ProductName, body.Publisher, body.Signer);
             return ok ? Results.Ok() : Results.BadRequest(new { error = "规则不存在" });
         });
 
@@ -332,6 +354,8 @@ public static class WinQuotaApi
     public sealed record AddComputerRuleRequest(string Name, long Minutes, long? WeekendMinutes);
 
     public sealed record UpdateRuleRequest(long Id, long Minutes, long? WeekendMinutes);
+
+    public sealed record EditRuleRequest(long Id, string? Name, List<string>? ProcessNames, string? ExePath, string? ProductName, string? Publisher, string? Signer);
 
     public sealed record EnableRuleRequest(long Id, bool Enabled);
 

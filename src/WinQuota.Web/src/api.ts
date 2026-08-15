@@ -54,6 +54,7 @@ export interface RuleStatus {
   remainingSeconds: number
   running: boolean
   processes: { pid: number; name: string }[]
+  iconPath: string | null
 }
 
 export interface StatusPayload {
@@ -103,6 +104,15 @@ export const api = {
     request('/api/rules/computer', { method: 'POST', body: JSON.stringify(body) }),
   updateRule: (body: { id: number; minutes: number; weekendMinutes?: number }) =>
     request('/api/rules/update', { method: 'POST', body: JSON.stringify(body) }),
+  editRule: (body: {
+    id: number
+    name?: string
+    processNames?: string[]
+    exePath?: string
+    productName?: string
+    publisher?: string
+    signer?: string
+  }) => request('/api/rules/edit', { method: 'POST', body: JSON.stringify(body) }),
   enableRule: (id: number, enabled: boolean) =>
     request('/api/rules/enable', { method: 'POST', body: JSON.stringify({ id, enabled }) }),
   deleteRule: (id: number) =>

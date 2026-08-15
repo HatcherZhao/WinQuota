@@ -78,6 +78,14 @@ onUnmounted(() => {
         <a-card>
           <template #title>
             <a-space>
+              <img
+                v-if="r.iconPath"
+                :src="`/api/icon?path=${encodeURIComponent(r.iconPath)}`"
+                width="20"
+                height="20"
+                style="vertical-align: middle"
+                @error="(e: any) => (e.target.style.visibility = 'hidden')"
+              />
               <span>{{ r.name }}</span>
               <a-tag v-if="r.type === 'computer'" color="arcoblue">整机</a-tag>
               <a-tag v-else color="green">应用</a-tag>

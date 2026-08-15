@@ -13,6 +13,54 @@ public class QuotaDatabaseTests
     }
 
     [Fact]
+    public void UpdateRuleDetails_RenamesAndReplacesProcesses_KeepingUsage()
+    {
+        var id = _database.AddApplicationRule("旧名", [3600, 3600, 3600, 3600, 3600, 3600, 3600], ["old.exe"]);
+        var day = new DateOnly(2026, 8, 15);
+        _database.AddUsedSeconds(id, day, 1200);
+
+        Assert.True(_database.UpdateRuleDetails(id, "新名", ["new1.exe", "new2.exe"]));
+
+        var entry = Assert.Single(_database.GetRules());
+        Assert.Equal("新名", entry.Rule.Name);
+        Assert.Equal(2, entry.Apps.Count);
+        Assert.Contains(entry.Apps, a => a.ProcessName == "new1.exe");
+        // 额度与当日用量历史保留
+        Assert.Equal(3600, entry.Rule.QuotaFor(day));
+        Assert.Equal(1200, _database.GetOrCreateUsage(id, day).UsedSeconds);
+    }
+
+    [Fact]
+    public void UpdateRuleDetails_SupportsPartialEdits()
+    {
+        var id = _database.AddApplicationRule("a", [60, 60, 60, 60, 60, 60, 60], ["a.exe"]);
+
+        // 只改进程
+        Assert.True(_database.UpdateRuleDetails(id, null, ["b.exe"]));
+        var entry = Assert.Single(_database.GetRules());
+        Assert.Equal("a", entry.Rule.Name);
+        Assert.Equal("b.exe", entry.Apps.Single().ProcessName);
+
+        // 只改名
+        Assert.True(_database.UpdateRuleDetails(id, "renamed", null));
+        Assert.Equal("renamed", Assert.Single(_database.GetRules()).Rule.Name);
+
+        // 不存在的规则
+        Assert.False(_database.UpdateRuleDetails(9999, "x", ["y.exe"]));
+    }
+
+    [Fact]
+    public void UpdateRuleDetails_IgnoresProcessesForComputerRule()
+    {
+        var id = _database.AddComputerRule("电脑", [60, 60, 60, 60, 60, 60, 60]);
+        Assert.True(_database.UpdateRuleDetails(id, "整机新名", ["should-be-ignored.exe"]));
+
+        var entry = Assert.Single(_database.GetRules());
+        Assert.Equal("整机新名", entry.Rule.Name);
+        Assert.Empty(entry.Apps); // 整机规则不挂进程
+    }
+
+    [Fact]
     public void AddComputerRule_PersistsWithTypeComputerAndNoApps()
     {
         var ruleId = _database.AddComputerRule("电脑使用", [10800, 10800, 10800, 10800, 10800, 18000, 18000]);

@@ -12,6 +12,11 @@ const editRule = ref<RuleDetail | null>(null)
 const editMinutes = ref(0)
 const editWeekend = ref(0)
 
+const detailVisible = ref(false)
+const detailRule = ref<RuleDetail | null>(null)
+const editName = ref('')
+const editProcesses = ref('')
+
 async function load() {
   loading.value = true
   try {
@@ -75,6 +80,37 @@ async function saveEdit() {
   }
 }
 
+function openDetail(row: any) {
+  detailRule.value = row
+  editName.value = row.name
+  editProcesses.value = row.apps.map((a: any) => a.processName).join('\n')
+  detailVisible.value = true
+}
+
+async function saveDetail() {
+  if (!detailRule.value) return
+  const processes = editProcesses.value
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  try {
+    const body: any = { id: detailRule.value.id, name: editName.value.trim() }
+    if (detailRule.value.type === 'application') {
+      if (processes.length === 0) {
+        Message.warning('应用规则至少需要一个进程名')
+        return
+      }
+      body.processNames = processes
+    }
+    await api.editRule(body)
+    Message.success('规则已更新（额度与用量历史保留），下一个扫描周期生效')
+    detailVisible.value = false
+    load()
+  } catch (e: any) {
+    if (e.name !== 'PinRequiredError') Message.error(e.message)
+  }
+}
+
 async function remove(row: any) {
   try {
     await api.deleteRule(row.id)
@@ -125,6 +161,7 @@ onMounted(load)
                 </template>
               </a-dropdown>
               <a-button size="small" @click="openEdit(record)">改额度</a-button>
+              <a-button size="small" @click="openDetail(record)">编辑</a-button>
               <a-popconfirm content="确定删除这条规则？" type="warning" @ok="remove(record)">
                 <a-button size="small" status="danger">删除</a-button>
               </a-popconfirm>
@@ -135,6 +172,17 @@ onMounted(load)
     </a-table>
     <a-empty v-if="!loading && rows.length === 0" description="暂无规则" />
   </a-card>
+
+  <a-modal v-model:visible="detailVisible" :title="`编辑规则：${detailRule?.name || ''}`" @ok="saveDetail">
+    <a-form layout="vertical">
+      <a-form-item label="规则名称">
+        <a-input v-model="editName" />
+      </a-form-item>
+      <a-form-item v-if="detailRule?.type === 'application'" label="匹配进程（每行一个，保存后原位替换；额度与今日已用时间保留）">
+        <a-textarea v-model="editProcesses" :auto-size="{ minRows: 3, maxRows: 8 }" placeholder="foxwq.exe&#10;foxwqclient.exe" />
+      </a-form-item>
+    </a-form>
+  </a-modal>
 
   <a-modal v-model:visible="editVisible" :title="`修改额度：${editRule?.name || ''}`" @ok="saveEdit">
     <a-form :model="null" layout="vertical">

@@ -152,6 +152,16 @@ public sealed class QuotaWorker : BackgroundService
                     _jobObjectManager.AssignToRule(rule.Id, process.Pid);
                 }
 
+                // 记录命中进程的 exe 路径（管理界面取图标用），只在缺失时解析。
+                if (string.IsNullOrEmpty(_liveStatus.GetIconPath(rule.Id)))
+                {
+                    var iconPath = _scanner.TryGetExecutablePath(matched[0].Pid);
+                    if (!string.IsNullOrEmpty(iconPath))
+                    {
+                        _liveStatus.SetRuleIconPath(rule.Id, iconPath);
+                    }
+                }
+
                 liveMatched[rule.Id] = matched
                     .Select(m => new LiveStatus.RunningProcess(m.Pid, m.ProcessName))
                     .ToList();

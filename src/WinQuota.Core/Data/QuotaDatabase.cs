@@ -303,6 +303,95 @@ public sealed class QuotaDatabase
         }
     }
 
+    /// <summary>
+    /// 原位编辑规则：改名并替换应用进程列表（额度与用量历史保持不变，
+    /// 相比删除重建不会丢失当日已用时间）。name / processNames 传 null 表示不改。
+    /// </summary>
+    public bool UpdateRuleDetails(
+        long ruleId,
+        string? name,
+        IReadOnlyList<string>? processNames,
+        string? exePath = null,
+        string? productName = null,
+        string? publisher = null,
+        string? signer = null)
+    {
+        lock (_gate)
+        {
+            using var connection = Open();
+            using var transaction = connection.BeginTransaction();
+
+            long changed = 0;
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = "UPDATE limit_rules SET name = @name WHERE id = @id";
+                command.Parameters.AddWithValue("@name", name.Trim());
+                command.Parameters.AddWithValue("@id", ruleId);
+                changed = command.ExecuteNonQuery();
+            }
+
+            if (processNames is { Count: > 0 } && GetRuleType(connection, ruleId) == (int)RuleType.APPLICATION)
+            {
+                using (var delete = connection.CreateCommand())
+                {
+                    delete.CommandText = "DELETE FROM application_rules WHERE rule_id = @id";
+                    delete.Parameters.AddWithValue("@id", ruleId);
+                    var removed = delete.ExecuteNonQuery();
+                    if (changed == 0 && removed > 0)
+                    {
+                        changed = 1; // 规则存在（应用行被替换）
+                    }
+                }
+
+                var applicationName = string.IsNullOrWhiteSpace(name)
+                    ? GetRuleName(connection, ruleId) ?? string.Empty
+                    : name.Trim();
+                foreach (var processName in processNames)
+                {
+                    using var command = connection.CreateCommand();
+                    command.CommandText = """
+                        INSERT INTO application_rules (rule_id, application_name, process_name, exe_path, product_name, publisher, signer, enabled)
+                        VALUES (@ruleId, @appName, @processName, @exePath, @productName, @publisher, @signer, 1);
+                        """;
+                    command.Parameters.AddWithValue("@ruleId", ruleId);
+                    command.Parameters.AddWithValue("@appName", applicationName);
+                    command.Parameters.AddWithValue("@processName", processName);
+                    command.Parameters.AddWithValue("@exePath", (object?)exePath ?? DBNull.Value);
+                    command.Parameters.AddWithValue("@productName", (object?)productName ?? DBNull.Value);
+                    command.Parameters.AddWithValue("@publisher", (object?)publisher ?? DBNull.Value);
+                    command.Parameters.AddWithValue("@signer", (object?)signer ?? DBNull.Value);
+                    command.ExecuteNonQuery();
+                }
+            }
+
+            if (changed == 1)
+            {
+                _integrity.SignAfterWrite(connection);
+                transaction.Commit();
+                _integrity.NotifyCommitted();
+            }
+
+            return changed == 1;
+        }
+    }
+
+    private static string? GetRuleName(SqliteConnection connection, long ruleId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT name FROM limit_rules WHERE id = @id";
+        command.Parameters.AddWithValue("@id", ruleId);
+        return command.ExecuteScalar() as string;
+    }
+
+    private static int? GetRuleType(SqliteConnection connection, long ruleId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT type FROM limit_rules WHERE id = @id";
+        command.Parameters.AddWithValue("@id", ruleId);
+        return command.ExecuteScalar() is { } value ? Convert.ToInt32(value, CultureInfo.InvariantCulture) : null;
+    }
+
     /// <summary>更新规则周一到周日的额度（秒）。</summary>
     public bool UpdateRuleQuotas(long ruleId, IReadOnlyList<long> weekdayLimitsMonToSun)
     {

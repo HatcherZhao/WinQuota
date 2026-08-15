@@ -15,6 +15,7 @@ public sealed class LiveStatus
     private long _lastUpdateUtcTicks;
     private ConcurrentDictionary<long, IReadOnlyList<RunningProcess>> _matchedByRule = new();
     private ConcurrentDictionary<long, long> _pendingByRule = new();
+    private ConcurrentDictionary<long, string> _iconPathByRule = new();
 
     public ComputerUsageState ComputerState => _computerState;
     public DateTime LastUpdateUtc => new(Interlocked.Read(ref _lastUpdateUtcTicks), DateTimeKind.Utc);
@@ -35,4 +36,12 @@ public sealed class LiveStatus
 
     public long GetPendingSeconds(long ruleId) =>
         _pendingByRule.TryGetValue(ruleId, out var pending) ? pending : 0;
+
+    /// <summary>记录规则命中进程的 exe 路径（取第一个），供管理界面展示应用图标；进程退出后保留最近值。</summary>
+    public void SetRuleIconPath(long ruleId, string path) => _iconPathByRule[ruleId] = path;
+
+    public string? GetIconPath(long ruleId) =>
+        _iconPathByRule.TryGetValue(ruleId, out var path) ? path : null;
+
+    public void RemoveRuleIcon(long ruleId) => _iconPathByRule.TryRemove(ruleId, out _);
 }
