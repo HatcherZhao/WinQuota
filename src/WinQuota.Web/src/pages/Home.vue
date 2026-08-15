@@ -113,11 +113,13 @@ onUnmounted(() => {
             <a-tag v-if="r.bonusSeconds > 0" color="gold">含奖励 {{ fmtDuration(r.bonusSeconds) }}</a-tag>
             <span class="remaining">剩余 {{ fmtDuration(r.remainingSeconds) }}</span>
           </div>
+          <!-- Arco 2.58 的 a-progress 没有 format prop，百分比文本必须用 #text 插槽自定义 -->
           <a-progress
             :percent="percent(r)"
             :status="r.remainingSeconds === 0 ? 'warning' : undefined"
-            :format="(p: number) => (p * 100).toFixed(2) + '%'"
-          />
+          >
+            <template #text="{ percent: p }">{{ (p * 100).toFixed(2) }}%</template>
+          </a-progress>
           <div v-if="r.remainingSeconds === 0 && extensionsLeft(r) > 0" class="extend-line">
             <a-button type="outline" status="warning" size="small" @click="doExtend(r)">
               延期 {{ r.extensionMinutes }} 分钟（今日还剩 {{ extensionsLeft(r) }} 次）
