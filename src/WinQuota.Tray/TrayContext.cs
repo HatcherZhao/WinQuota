@@ -130,7 +130,11 @@ internal sealed class TrayContext : ApplicationContext
     {
         try
         {
-            using var response = await _http.GetAsync($"{ApiBasePublic}/api/status");
+            // 携带用户会话内实测的空闲时间（GetLastInputInfo 只有会话内进程读得准），
+            // 服务端用它判定“正在使用/空闲”，规避部分环境 WTS 锁屏标志不可靠的问题。
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"{ApiBasePublic}/api/status");
+            request.Headers.Add("X-WinQuota-IdleSeconds", GetIdleSeconds().ToString("F0"));
+            using var response = await _http.SendAsync(request);
             response.EnsureSuccessStatusCode();
             var payload = await response.Content.ReadFromJsonAsync<StatusPayload>();
             _lastStatusSummary = payload is { Rules.Count: > 0 }
@@ -247,6 +251,29 @@ internal sealed class TrayContext : ApplicationContext
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool LockWorkStation();
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LastInputInfo
+    {
+        public uint cbSize;
+        public uint dwTime;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetLastInputInfo(ref LastInputInfo plii);
+
+    /// <summary>当前会话距最后一次键鼠输入的秒数（托盘运行在用户会话内，该读数有效）。</summary>
+    private static double GetIdleSeconds()
+    {
+        var info = new LastInputInfo { cbSize = (uint)Marshal.SizeOf<LastInputInfo>() };
+        if (!GetLastInputInfo(ref info))
+        {
+            return -1;
+        }
+
+        return ((uint)Environment.TickCount - info.dwTime) / 1000.0;
+    }
 
     private sealed record StatusPayload(string Date, string ComputerState, List<RuleStatus> Rules);
 

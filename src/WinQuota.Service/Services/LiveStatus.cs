@@ -44,4 +44,35 @@ public sealed class LiveStatus
         _iconPathByRule.TryGetValue(ruleId, out var path) ? path : null;
 
     public void RemoveRuleIcon(long ruleId) => _iconPathByRule.TryRemove(ruleId, out _);
+
+    // —— 会话空闲上报（托盘程序运行在用户会话内，GetLastInputInfo 在会话内才有效）——
+    // 部分 Windows 环境的 WTS SessionFlags 语义反转/被远控驱动干扰，
+    // 会话内实测的空闲时间是更可靠的“正在使用”判据。
+
+    private long _sessionIdleReceivedUtcTicks;
+    private long _sessionIdleSeconds = long.MinValue;
+
+    public void ReportSessionIdle(double idleSeconds)
+    {
+        if (idleSeconds < 0)
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _sessionIdleSeconds, (long)Math.Round(idleSeconds));
+        Interlocked.Exchange(ref _sessionIdleReceivedUtcTicks, DateTime.UtcNow.Ticks);
+    }
+
+    /// <summary>获取新鲜的会话空闲秒数（超过 maxAge 视为过期，返回 null）。</summary>
+    public double? TryGetSessionIdle(TimeSpan maxAge)
+    {
+        var received = Interlocked.Read(ref _sessionIdleReceivedUtcTicks);
+        if (received == 0 || DateTime.UtcNow - new DateTime(received, DateTimeKind.Utc) > maxAge)
+        {
+            return null;
+        }
+
+        var idle = Interlocked.Read(ref _sessionIdleSeconds);
+        return idle == long.MinValue ? null : idle;
+    }
 }

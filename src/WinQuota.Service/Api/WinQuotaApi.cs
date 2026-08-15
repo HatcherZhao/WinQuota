@@ -26,8 +26,17 @@ public static class WinQuotaApi
             await next();
         });
 
-        app.MapGet("/api/status", (QuotaDatabase db, LiveStatus live) =>
+        app.MapGet("/api/status", (QuotaDatabase db, LiveStatus live, HttpRequest request) =>
         {
+            // 托盘程序在用户会话内实测的空闲时间（GetLastInputInfo），优先于不可靠的 WTS 锁屏标志
+            if (double.TryParse(
+                    request.Headers["X-WinQuota-IdleSeconds"].FirstOrDefault(),
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var idleSeconds))
+            {
+                live.ReportSessionIdle(idleSeconds);
+            }
+
             var today = DateOnly.FromDateTime(DateTime.Now);
             var rules = db.GetRules();
             var list = rules.Select(entry =>
