@@ -34,9 +34,10 @@ const stateText = computed(() => {
   return computerStateText[status.value.computerState] || status.value.computerState
 })
 
+// 进度条显示剩余比例（Arco percent 取值 0~1）：满条 = 满额度，越用越短
 const percent = (r: RuleStatus) => {
   const total = r.quotaSeconds + r.bonusSeconds
-  return total <= 0 ? 0 : Math.min(100, Math.round((r.usedSeconds / total) * 100))
+  return total <= 0 ? 0 : Math.max(0, Math.min(1, r.remainingSeconds / total))
 }
 
 const chart = computed(() => {
