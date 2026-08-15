@@ -5,7 +5,7 @@
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 
-!define VERSION "0.8.0"
+!define VERSION "0.8.1"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WinQuota"
 
 Name "WinQuota 防沉迷 ${VERSION}"
@@ -22,7 +22,7 @@ VIAddVersionKey "ProductName" "WinQuota"
 VIAddVersionKey "FileDescription" "WinQuota 防沉迷安装程序"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "WinQuota"
-VIProductVersion "0.8.0.0"
+VIProductVersion "0.8.1.0"
 
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
